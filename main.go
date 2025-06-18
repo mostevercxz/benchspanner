@@ -45,7 +45,7 @@ func setupGraphSpanner(ctx context.Context) error {
 	var ddl []string
 
 	// 1. Clean slate
-	ddl = append(ddl, fmt.Sprintf("DROP PROPERTY GRAPH IF EXISTS %s;", graphName))
+	ddl = append(ddl, fmt.Sprintf("DROP PROPERTY GRAPH IF EXISTS %s", graphName))
 
 	// 2. Vertex table
 	ddl = append(ddl, `
@@ -55,13 +55,13 @@ CREATE TABLE Users (
   attr12       INT64,
   attr13       INT64,
   expire_time  TIMESTAMP OPTIONS (allow_commit_timestamp=true)
-) PRIMARY KEY (uid);`)
+) PRIMARY KEY (uid)`)
 
 	ddl = append(ddl,
 		`CREATE INDEX user_attr11_attr12_attr13_idx
-		   ON Users(attr11, attr12, attr13);`,
+		   ON Users(attr11, attr12, attr13)`,
 		`ALTER TABLE Users
-		   ALTER ROW DELETION POLICY (OLDER_THAN(expire_time, INTERVAL 8 DAY));`,
+		   ALTER ROW DELETION POLICY (OLDER_THAN(expire_time, INTERVAL 8 DAY))`,
 	)
 
 	// 3. Edge tables + indexes + TTL
@@ -76,16 +76,16 @@ CREATE TABLE %s (
   attr102      INT64,
   attr103      INT64,
   expire_time  TIMESTAMP OPTIONS (allow_commit_timestamp=true)
-) PRIMARY KEY (edge_id);`, label))
+) PRIMARY KEY (edge_id)`, label))
 
 		ddl = append(ddl, fmt.Sprintf(
 			`CREATE INDEX %s_attr101_attr102_attr103_idx
-			   ON %s(attr101, attr102, attr103);`,
+			   ON %s(attr101, attr102, attr103)`,
 			strings.ToLower(label), label))
 
 		ddl = append(ddl, fmt.Sprintf(
 			`ALTER TABLE %s
-			   ALTER ROW DELETION POLICY (OLDER_THAN(expire_time, INTERVAL 8 DAY));`,
+			   ALTER ROW DELETION POLICY (OLDER_THAN(expire_time, INTERVAL 8 DAY))`,
 			label))
 	}
 
@@ -104,7 +104,7 @@ NODE TABLES (
     LABEL User PROPERTIES (uid, attr11, attr12, attr13)
 )
 EDGE TABLES (%s
-);`, graphName, strings.Join(edgeDefs, ","))
+)`, graphName, strings.Join(edgeDefs, ","))
 
 	ddl = append(ddl, graphDDL)
 
