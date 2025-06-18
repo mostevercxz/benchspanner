@@ -2,9 +2,17 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
+	"math"
+	"math/rand"
+	"os"
+	"os/signal"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"cloud.google.com/go/spanner"
 	database "cloud.google.com/go/spanner/admin/database/apiv1"
@@ -19,6 +27,70 @@ const (
 	databaseID = "mtbench"
 	graphName  = "graph0618"
 )
+
+// 基准测试配置
+var (
+	VUS              = 10                 // 并发用户数
+	ZONE_START       = 100                // 起始区域ID
+	ZONES_TOTAL      = 10                 // 总区域数
+	RECORDS_PER_ZONE = 80                 // 每区域记录数
+	TOTAL_VERTICES   = ZONES_TOTAL * 8000 // 总顶点数（使用固定的 IDS_PER_ZONE = 8000）
+	IDS_PER_ZONE     = 8000               // 每区域ID数量
+	STR_ATTR_CNT     = 10                 // 字符串属性数量
+	INT_ATTR_CNT     = 90                 // 整数属性数量
+)
+
+// VertexData represents a vertex to be inserted
+type VertexData struct {
+	UID      int64
+	StrAttrs []string
+	IntAttrs []int64
+}
+
+// Metrics holds benchmark metrics
+type Metrics struct {
+	totalOps      int64
+	totalDuration time.Duration
+	successCount  int64
+	errorCount    int64
+	minDuration   time.Duration
+	maxDuration   time.Duration
+	mu            sync.Mutex
+}
+
+func (m *Metrics) AddOperation(duration time.Duration, success bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.totalOps++
+	m.totalDuration += duration
+
+	if success {
+		m.successCount++
+	} else {
+		m.errorCount++
+	}
+
+	if m.minDuration == 0 || duration < m.minDuration {
+		m.minDuration = duration
+	}
+	if duration > m.maxDuration {
+		m.maxDuration = duration
+	}
+}
+
+func (m *Metrics) GetStats() (ops int64, avgDuration time.Duration, successRate float64, throughput float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	ops = m.totalOps
+	if ops > 0 {
+		avgDuration = m.totalDuration / time.Duration(ops)
+		successRate = float64(m.successCount) * 100 / float64(ops)
+		throughput = float64(m.successCount) / m.totalDuration.Seconds()
+	}
+	return
+}
 
 // setupGraphSpanner creates all tables, indexes, TTL policies, and the property graph.
 func setupGraphSpanner(ctx context.Context) error {
@@ -260,7 +332,377 @@ EDGE TABLES (%s
 	return nil
 }
 
+// generateVertexData generates vertex data in memory
+func generateVertexData(zoneStart, zonesTotal, recordsPerZone, strAttrCnt, intAttrCnt int) ([]*VertexData, error) {
+	totalRecords := zonesTotal * recordsPerZone
+	data := make([]*VertexData, 0, totalRecords)
+
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	letters := []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+
+	for zoneID := zoneStart; zoneID < zoneStart+zonesTotal; zoneID++ {
+		for id := 1; id <= recordsPerZone; id++ {
+			uid := (int64(zoneID) << 40) | int64(id)
+
+			// Generate string attributes
+			strAttrs := make([]string, strAttrCnt)
+			for i := 0; i < strAttrCnt; i++ {
+				strAttrs[i] = randFixedString(rng, letters, 20)
+			}
+
+			// Generate integer attributes
+			intAttrs := make([]int64, intAttrCnt)
+			for i := 0; i < intAttrCnt; i++ {
+				intAttrs[i] = rng.Int63n(10000)
+			}
+
+			vertex := &VertexData{
+				UID:      uid,
+				StrAttrs: strAttrs,
+				IntAttrs: intAttrs,
+			}
+
+			data = append(data, vertex)
+		}
+	}
+
+	log.Printf("Generated %d vertex records", len(data))
+	return data, nil
+}
+
+func randFixedString(rng *rand.Rand, pool []rune, n int) string {
+	b := make([]rune, n)
+	for i := range b {
+		b[i] = pool[rng.Intn(len(pool))]
+	}
+	return string(b)
+}
+
+func countdownOrExit(action string, seconds int) {
+	log.Printf("即将%s，%d秒后启动。按 Ctrl+C 可中断...", action, seconds)
+
+	interrupt := make(chan os.Signal, 1)
+	signal.Notify(interrupt, os.Interrupt)
+
+	timer := time.NewTimer(time.Duration(seconds) * time.Second)
+	select {
+	case <-interrupt:
+		log.Println("用户中断，程序退出。")
+		os.Exit(1)
+	case <-timer.C:
+		// Continue normally
+	}
+}
+
+// spannerWriteVertexTest performs vertex write testing with multiple goroutines
+func spannerWriteVertexTest(client *spanner.Client) {
+	log.Println("Starting Spanner vertex write test...")
+
+	// Step 1: Generate vertex data in memory
+	log.Println("Generating vertex data in memory...")
+	vertices, err := generateVertexData(ZONE_START, ZONES_TOTAL, RECORDS_PER_ZONE, STR_ATTR_CNT, INT_ATTR_CNT)
+	if err != nil {
+		log.Printf("Failed to generate vertex data: %s", err.Error())
+		return
+	}
+
+	// Step 2: Distribute data among workers
+	log.Printf("Distributing %d vertices among %d workers...", len(vertices), VUS)
+
+	var wg sync.WaitGroup
+	startTime := time.Now()
+	metrics := &Metrics{}
+
+	// Calculate vertices per worker
+	verticesPerWorker := int(math.Ceil(float64(len(vertices)) / float64(VUS)))
+
+	log.Printf("Starting %d write workers...", VUS)
+	countdownOrExit("开始写入顶点", 5)
+
+	for worker := 0; worker < VUS; worker++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+
+			// Calculate data range for this worker
+			startIdx := workerID * verticesPerWorker
+			endIdx := (workerID + 1) * verticesPerWorker
+			if endIdx > len(vertices) {
+				endIdx = len(vertices)
+			}
+
+			log.Printf("Worker %d started, processing vertices %d to %d", workerID, startIdx, endIdx-1)
+
+			workerSuccessCount := 0
+			workerErrorCount := 0
+
+			// Process vertices assigned to this worker
+			for i := startIdx; i < endIdx; i++ {
+				vertex := vertices[i]
+
+				// Build mutation for this vertex
+				mutation := buildVertexMutation(vertex)
+
+				// Execute insert
+				insertStart := time.Now()
+				_, err := client.Apply(context.Background(), []*spanner.Mutation{mutation})
+				insertDuration := time.Since(insertStart)
+
+				// Record metrics
+				success := err == nil
+				metrics.AddOperation(insertDuration, success)
+
+				if err != nil {
+					log.Printf("Worker %d insert failed for UID %d: %s", workerID, vertex.UID, err.Error())
+					workerErrorCount++
+				} else {
+					workerSuccessCount++
+				}
+
+				// Log progress every 100 inserts
+				if (i-startIdx+1)%100 == 0 {
+					log.Printf("Worker %d processed %d vertices, success: %d, errors: %d",
+						workerID, i-startIdx+1, workerSuccessCount, workerErrorCount)
+				}
+			}
+
+			log.Printf("Worker %d completed: %d success, %d errors",
+				workerID, workerSuccessCount, workerErrorCount)
+		}(worker)
+	}
+
+	// Wait for all workers to complete
+	wg.Wait()
+	totalDuration := time.Since(startTime)
+
+	// Get combined metrics
+	ops, avgDuration, successRate, throughput := metrics.GetStats()
+
+	log.Println("Vertex write test completed:")
+	log.Printf("  Total duration: %v", totalDuration)
+	log.Printf("  Total vertices: %d", len(vertices))
+	log.Printf("  Total operations: %d", ops)
+	log.Printf("  Success rate: %.2f%%", successRate)
+	log.Printf("  Average latency: %v", avgDuration)
+	log.Printf("  Throughput: %.2f vertices/sec", throughput)
+}
+
+// buildVertexMutation builds a Spanner mutation for inserting a vertex
+func buildVertexMutation(vertex *VertexData) *spanner.Mutation {
+	// Prepare columns and values for the Users table
+	columns := []string{"uid"}
+	values := []interface{}{vertex.UID}
+
+	// Add string attributes (attr1-attr10)
+	for i, strAttr := range vertex.StrAttrs {
+		columns = append(columns, fmt.Sprintf("attr%d", i+1))
+		values = append(values, strAttr)
+	}
+
+	// Add integer attributes (attr11-attr100)
+	for i, intAttr := range vertex.IntAttrs {
+		attrIndex := len(vertex.StrAttrs) + i + 1
+		columns = append(columns, fmt.Sprintf("attr%d", attrIndex))
+		values = append(values, intAttr)
+	}
+
+	// Add expire_time for TTL
+	columns = append(columns, "expire_time")
+	values = append(values, spanner.CommitTimestamp)
+
+	return spanner.Insert("Users", columns, values)
+}
+
+// spannerWriteEdgeTest performs edge write testing with multiple goroutines
+func spannerWriteEdgeTest(client *spanner.Client, startZoneID, endZoneID int) {
+	log.Printf("Starting Spanner edge write test for zones [%d, %d)...", startZoneID, endZoneID)
+
+	// Calculate total zones and players
+	totalZones := endZoneID - startZoneID
+	totalPlayers := int64(totalZones * IDS_PER_ZONE)
+	totalEdges := totalPlayers * 5 * 100 // 5种关系，每种100条边
+
+	log.Printf("Total zones: %d, players per zone: %d", totalZones, IDS_PER_ZONE)
+	log.Printf("Total players: %d, Total edges to insert: %d", totalPlayers, totalEdges)
+
+	// Assign players to workers
+	playersPerWorker := int(math.Ceil(float64(totalPlayers) / float64(VUS)))
+
+	var wg sync.WaitGroup
+	startTime := time.Now()
+	metrics := &Metrics{}
+
+	log.Printf("Starting %d edge write workers...", VUS)
+
+	for worker := 0; worker < VUS; worker++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+
+			log.Printf("Worker %d started", workerID)
+
+			workerSuccessCount := 0
+			workerErrorCount := 0
+
+			// Calculate players assigned to this worker
+			workerStartIndex := workerID * playersPerWorker
+			workerEndIndex := (workerID + 1) * playersPerWorker
+			if workerEndIndex > int(totalPlayers) {
+				workerEndIndex = int(totalPlayers)
+			}
+
+			rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(workerID)))
+
+			// Process players assigned to this worker
+			for playerIndex := workerStartIndex; playerIndex < workerEndIndex; playerIndex++ {
+				// Convert playerIndex to corresponding UID
+				zoneOffset := playerIndex / IDS_PER_ZONE
+				idInZone := playerIndex%IDS_PER_ZONE + 1
+				currentZoneID := startZoneID + zoneOffset
+				playerUID := (int64(currentZoneID) << 40) | int64(idInZone)
+
+				// Create 5 types of relationships for this player
+				relationTypes := []string{"Rel1", "Rel2", "Rel3", "Rel4", "Rel5"}
+
+				for _, relType := range relationTypes {
+					// Create mutations for 100 edges of this relationship type
+					var mutations []*spanner.Mutation
+
+					for i := 0; i < 100; i++ {
+						// Randomly select target UID
+						targetZoneID := ZONE_START + rng.Intn(ZONES_TOTAL)
+						targetID := 1 + rng.Intn(IDS_PER_ZONE)
+						targetUID := (int64(targetZoneID) << 40) | int64(targetID)
+
+						if targetUID == playerUID {
+							continue
+						}
+
+						// Generate edge attributes attr101-attr110
+						edgeAttrs := make([]int64, 10)
+						for j := 0; j < 10; j++ {
+							edgeAttrs[j] = rng.Int63n(10000)
+						}
+
+						// Build mutation for this edge
+						mutation := buildEdgeMutation(relType, playerUID, targetUID, edgeAttrs)
+						mutations = append(mutations, mutation)
+					}
+
+					// Execute batch insert for this relation type
+					insertStart := time.Now()
+					_, err := client.Apply(context.Background(), mutations)
+					insertDuration := time.Since(insertStart)
+
+					// Record metrics for the batch
+					success := err == nil
+					metrics.AddOperation(insertDuration, success)
+
+					if err != nil {
+						log.Printf("Worker %d edge batch insert failed for player %d (%s): %s",
+							workerID, playerUID, relType, err.Error())
+						workerErrorCount += len(mutations)
+					} else {
+						workerSuccessCount += len(mutations)
+					}
+				}
+
+				// Log progress every 10 players
+				if (playerIndex-workerStartIndex+1)%10 == 0 {
+					log.Printf("Worker %d processed player %d (UID: %d), success: %d, errors: %d",
+						workerID, playerIndex, playerUID, workerSuccessCount, workerErrorCount)
+				}
+			}
+
+			log.Printf("Worker %d completed: %d success, %d errors",
+				workerID, workerSuccessCount, workerErrorCount)
+		}(worker)
+	}
+
+	// Wait for all workers to complete
+	wg.Wait()
+	totalDuration := time.Since(startTime)
+
+	// Get combined metrics
+	ops, avgDuration, successRate, throughput := metrics.GetStats()
+
+	log.Println("Edge write test completed:")
+	log.Printf("  Total duration: %v", totalDuration)
+	log.Printf("  Total edges expected: %d", totalEdges)
+	log.Printf("  Total operations: %d", ops)
+	log.Printf("  Success rate: %.2f%%", successRate)
+	log.Printf("  Average latency: %v", avgDuration)
+	log.Printf("  Throughput: %.2f edges/sec", throughput)
+}
+
+// buildEdgeMutation builds a Spanner mutation for inserting an edge
+func buildEdgeMutation(relType string, sourceUID, targetUID int64, attrs []int64) *spanner.Mutation {
+	// Prepare columns and values for the edge table
+	columns := []string{"uid", "dst_uid"}
+	values := []interface{}{sourceUID, targetUID}
+
+	// Add edge attributes attr101-attr110
+	for i, attr := range attrs {
+		columns = append(columns, fmt.Sprintf("attr%d", 101+i))
+		values = append(values, attr)
+	}
+
+	// Add expire_time for TTL
+	columns = append(columns, "expire_time")
+	values = append(values, spanner.CommitTimestamp)
+
+	return spanner.Insert(relType, columns, values)
+}
+
+// initFromEnv initializes configuration from environment variables
+func initFromEnv() {
+	// Initialize VUS from environment variable
+	if vusStr := os.Getenv("VUS"); vusStr != "" {
+		if parsedVUS, err := strconv.Atoi(vusStr); err == nil && parsedVUS > 0 {
+			VUS = parsedVUS
+		}
+	}
+
+	// Initialize ZONE_START from environment variable
+	if zoneStartStr := os.Getenv("ZONE_START"); zoneStartStr != "" {
+		if parsedZoneStart, err := strconv.Atoi(zoneStartStr); err == nil && parsedZoneStart >= 0 {
+			ZONE_START = parsedZoneStart
+		}
+	}
+
+	// Initialize ZONES_TOTAL from environment variable
+	if zonesTotalStr := os.Getenv("ZONES_TOTAL"); zonesTotalStr != "" {
+		if parsedZonesTotal, err := strconv.Atoi(zonesTotalStr); err == nil && parsedZonesTotal > 0 {
+			ZONES_TOTAL = parsedZonesTotal
+		}
+	}
+
+	// Initialize RECORDS_PER_ZONE from environment variable
+	if recordsPerZoneStr := os.Getenv("RECORDS_PER_ZONE"); recordsPerZoneStr != "" {
+		if parsedRecordsPerZone, err := strconv.Atoi(recordsPerZoneStr); err == nil && parsedRecordsPerZone > 0 {
+			RECORDS_PER_ZONE = parsedRecordsPerZone
+		}
+	}
+
+	// Recalculate TOTAL_VERTICES after configuration changes
+	TOTAL_VERTICES = ZONES_TOTAL * IDS_PER_ZONE
+
+	log.Printf("Configuration: VUS=%d, ZONE_START=%d, ZONES_TOTAL=%d, RECORDS_PER_ZONE=%d, TOTAL_VERTICES=%d",
+		VUS, ZONE_START, ZONES_TOTAL, RECORDS_PER_ZONE, TOTAL_VERTICES)
+}
+
 func main() {
+	// Initialize configuration from environment variables
+	initFromEnv()
+
+	// Define command line flags
+	var testType string
+	var startZone, endZone int
+	flag.StringVar(&testType, "test", "setup", "Test type to run: setup, write-vertex, write-edge, all")
+	flag.IntVar(&startZone, "start-zone", ZONE_START, "Start zone ID for edge test")
+	flag.IntVar(&endZone, "end-zone", ZONE_START+ZONES_TOTAL, "End zone ID for edge test")
+	flag.Parse()
+
 	ctx := context.Background()
 
 	// Fully-qualified database name:
@@ -284,38 +726,78 @@ func main() {
 	}
 	defer client.Close()
 
-	// Simple read to prove it works
-	stmt := spanner.Statement{SQL: "SELECT 1 AS one"}
-	iter := client.Single().Query(ctx, stmt)
-	defer iter.Stop()
+	log.Printf("Starting Spanner benchmark with test type: %s", testType)
 
-	var one int64
-	row, err := iter.Next()
-	if err != nil {
-		if st, ok := status.FromError(err); ok {
-			log.Printf("Query failed - Code: %v (%d), Message: %s",
-				st.Code(), int(st.Code()), st.Message())
-			for _, detail := range st.Details() {
-				log.Printf("Error Detail: %+v", detail)
-			}
-		} else {
-			log.Printf("Query failed - Error: %v", err)
-		}
-		log.Fatalf("Query execution failed")
-	}
-	if err := row.Column(0, &one); err != nil {
-		if st, ok := status.FromError(err); ok {
-			log.Printf("Failed to parse row - Code: %v (%d), Message: %s",
-				st.Code(), int(st.Code()), st.Message())
-			for _, detail := range st.Details() {
-				log.Printf("Error Detail: %+v", detail)
-			}
-		} else {
-			log.Printf("Failed to parse row - Error: %v", err)
-		}
-		log.Fatalf("Row parsing failed")
-	}
-	fmt.Printf("Got %d from Spanner!\n", one)
+	// Execute tests based on command line option
+	switch testType {
+	case "setup":
+		log.Println("Running setup test...")
 
-	setupGraphSpanner(ctx)
+		// Simple read to prove it works
+		stmt := spanner.Statement{SQL: "SELECT 1 AS one"}
+		iter := client.Single().Query(ctx, stmt)
+		defer iter.Stop()
+
+		var one int64
+		row, err := iter.Next()
+		if err != nil {
+			if st, ok := status.FromError(err); ok {
+				log.Printf("Query failed - Code: %v (%d), Message: %s",
+					st.Code(), int(st.Code()), st.Message())
+				for _, detail := range st.Details() {
+					log.Printf("Error Detail: %+v", detail)
+				}
+			} else {
+				log.Printf("Query failed - Error: %v", err)
+			}
+			log.Fatalf("Query execution failed")
+		}
+		if err := row.Column(0, &one); err != nil {
+			if st, ok := status.FromError(err); ok {
+				log.Printf("Failed to parse row - Code: %v (%d), Message: %s",
+					st.Code(), int(st.Code()), st.Message())
+				for _, detail := range st.Details() {
+					log.Printf("Error Detail: %+v", detail)
+				}
+			} else {
+				log.Printf("Failed to parse row - Error: %v", err)
+			}
+			log.Fatalf("Row parsing failed")
+		}
+		fmt.Printf("Got %d from Spanner!\n", one)
+
+		// Setup graph schema
+		if err := setupGraphSpanner(ctx); err != nil {
+			log.Fatalf("Failed to setup graph: %v", err)
+		}
+
+	case "write-vertex":
+		log.Println("Running vertex write test...")
+		spannerWriteVertexTest(client)
+
+	case "write-edge":
+		log.Printf("Running edge write test for zones [%d, %d)...", startZone, endZone)
+		spannerWriteEdgeTest(client, startZone, endZone)
+
+	case "all":
+		log.Println("Running all tests...")
+
+		// First setup the graph if needed
+		if err := setupGraphSpanner(ctx); err != nil {
+			log.Printf("Setup failed: %v", err)
+		}
+
+		// Test vertex write performance
+		spannerWriteVertexTest(client)
+
+		// Test edge write performance
+		spannerWriteEdgeTest(client, ZONE_START, ZONE_START+ZONES_TOTAL)
+
+	default:
+		log.Printf("Unknown test type: %s", testType)
+		log.Println("Available test types: setup, write-vertex, write-edge, all")
+		os.Exit(1)
+	}
+
+	log.Println("Benchmark completed")
 }
