@@ -585,6 +585,8 @@ func spannerWriteEdgeTest(client *spanner.Client, startZoneID, endZoneID int, ba
 						targetUID := (int64(targetZoneID) << 40) | int64(targetID)
 
 						if targetUID == playerUID {
+							// Skip self-loop
+							log.Printf("ERROR: Worker %d skipped self-loop for player %d (%s),targetZoneid=%d,targetID=%d", workerID, playerUID, relType, targetZoneID, targetID)
 							continue
 						}
 
