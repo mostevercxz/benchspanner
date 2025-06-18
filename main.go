@@ -34,14 +34,15 @@ const (
 
 // 基准测试配置
 var (
-	VUS                = 10                             // 并发用户数
-	ZONE_START         = 100                            // 起始区ID
-	ZONES_TOTAL        = 10                             // 总区数
-	RECORDS_PER_ZONE   = 80                             // 每区玩家数
-	EDGES_PER_RELATION = 100                            // 每种关系的边数
-	TOTAL_VERTICES     = ZONES_TOTAL * RECORDS_PER_ZONE // 总顶点数（使用固定的 IDS_PER_ZONE = 8000）
-	STR_ATTR_CNT       = 10                             // 字符串属性数量
-	INT_ATTR_CNT       = 90                             // 整数属性数量
+	VUS                   = 10                             // 并发用户数
+	ZONE_START            = 100                            // 起始区ID
+	ZONES_TOTAL           = 10                             // 总区数
+	RECORDS_PER_ZONE      = 80                             // 每区玩家数
+	EDGES_PER_RELATION    = 100                            // 每种关系的边数
+	TOTAL_VERTICES        = ZONES_TOTAL * RECORDS_PER_ZONE // 总顶点数（使用固定的 IDS_PER_ZONE = 8000）
+	STR_ATTR_CNT          = 10                             // 字符串属性数量
+	INT_ATTR_CNT          = 90                             // 整数属性数量
+	PreGenerateVertexData = true                           // 是否预生成所有顶点数据
 )
 
 // VertexData represents a vertex to be inserted
@@ -890,11 +891,21 @@ func initFromEnv() {
 		}
 	}
 
+	// Initialize PreGenerateVertexData from environment variable
+	if preGenStr := os.Getenv("PRE_GENERATE_VERTEX_DATA"); preGenStr != "" {
+		lower := strings.ToLower(preGenStr)
+		if lower == "false" || lower == "0" {
+			PreGenerateVertexData = false
+		} else if lower == "true" || lower == "1" {
+			PreGenerateVertexData = true
+		}
+	}
+
 	// Recalculate TOTAL_VERTICES after configuration changes
 	TOTAL_VERTICES = ZONES_TOTAL * RECORDS_PER_ZONE
 
-	log.Printf("Configuration: VUS=%d, ZONE_START=%d, ZONES_TOTAL=%d, RECORDS_PER_ZONE=%d, EDGES_PER_RELATION=%d, TOTAL_VERTICES=%d",
-		VUS, ZONE_START, ZONES_TOTAL, RECORDS_PER_ZONE, EDGES_PER_RELATION, TOTAL_VERTICES)
+	log.Printf("Configuration: VUS=%d, ZONE_START=%d, ZONES_TOTAL=%d, RECORDS_PER_ZONE=%d, EDGES_PER_RELATION=%d, TOTAL_VERTICES=%d, PreGenerateVertexData=%v",
+		VUS, ZONE_START, ZONES_TOTAL, RECORDS_PER_ZONE, EDGES_PER_RELATION, TOTAL_VERTICES, PreGenerateVertexData)
 }
 
 // setupLogging configures logging to output to both terminal and file
@@ -1080,7 +1091,7 @@ func main() {
 
 	case "write-vertex":
 		log.Println("Running vertex write test...")
-		spannerWriteVertexTest(client, true)
+		spannerWriteVertexTest(client, PreGenerateVertexData)
 
 	case "write-edge":
 		log.Printf("Running edge write test for zones [%d, %d)...", startZone, endZone)
@@ -1103,7 +1114,7 @@ func main() {
 		}
 
 		// Test vertex write performance
-		spannerWriteVertexTest(client, true)
+		spannerWriteVertexTest(client, PreGenerateVertexData)
 
 		// Test edge write performance
 		spannerWriteEdgeTest(client, ZONE_START, ZONE_START+ZONES_TOTAL, batchNum)
