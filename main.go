@@ -1,6 +1,7 @@
 package main
 
 import (
+	"benchspanner/metrics"
 	"context"
 	"flag"
 	"fmt"
@@ -45,51 +46,6 @@ type VertexData struct {
 	UID      int64
 	StrAttrs []string
 	IntAttrs []int64
-}
-
-// Metrics holds benchmark metrics
-type Metrics struct {
-	totalOps      int64
-	totalDuration time.Duration
-	successCount  int64
-	errorCount    int64
-	minDuration   time.Duration
-	maxDuration   time.Duration
-	mu            sync.Mutex
-}
-
-func (m *Metrics) AddOperation(duration time.Duration, success bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	m.totalOps++
-	m.totalDuration += duration
-
-	if success {
-		m.successCount++
-	} else {
-		m.errorCount++
-	}
-
-	if m.minDuration == 0 || duration < m.minDuration {
-		m.minDuration = duration
-	}
-	if duration > m.maxDuration {
-		m.maxDuration = duration
-	}
-}
-
-func (m *Metrics) GetStats() (ops int64, avgDuration time.Duration, successRate float64, throughput float64) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	ops = m.totalOps
-	if ops > 0 {
-		avgDuration = m.totalDuration / time.Duration(ops)
-		successRate = float64(m.successCount) * 100 / float64(ops)
-		throughput = float64(m.successCount) / m.totalDuration.Seconds()
-	}
-	return
 }
 
 // setupGraphSpanner creates all tables, indexes, TTL policies, and the property graph.
@@ -411,7 +367,9 @@ func spannerWriteVertexTest(client *spanner.Client) {
 
 	var wg sync.WaitGroup
 	startTime := time.Now()
-	metrics := &Metrics{}
+
+	// Initialize metrics
+	metricsCollector := metrics.NewConcurrentMetrics(VUS)
 
 	// Calculate vertices per worker
 	verticesPerWorker := int(math.Ceil(float64(len(vertices)) / float64(VUS)))
@@ -449,14 +407,15 @@ func spannerWriteVertexTest(client *spanner.Client) {
 				insertDuration := time.Since(insertStart)
 
 				// Record metrics
-				success := err == nil
-				metrics.AddOperation(insertDuration, success)
+				metricsCollector.AddDuration(workerID, insertDuration)
 
 				if err != nil {
 					log.Printf("Worker %d insert failed for UID %d: %s", workerID, vertex.UID, err.Error())
 					workerErrorCount++
+					metricsCollector.AddError(1)
 				} else {
 					workerSuccessCount++
+					metricsCollector.AddSuccess(1)
 				}
 
 				// Log progress every 100 inserts
@@ -476,15 +435,19 @@ func spannerWriteVertexTest(client *spanner.Client) {
 	totalDuration := time.Since(startTime)
 
 	// Get combined metrics
-	ops, avgDuration, successRate, throughput := metrics.GetStats()
+	combinedMetrics := metricsCollector.CombinedStats()
+	totalSuccess := metricsCollector.GetSuccessCount()
+	totalErrors := metricsCollector.GetErrorCount()
+	totalVertices := int64(len(vertices))
 
 	log.Println("Vertex write test completed:")
 	log.Printf("  Total duration: %v", totalDuration)
-	log.Printf("  Total vertices: %d", len(vertices))
-	log.Printf("  Total operations: %d", ops)
-	log.Printf("  Success rate: %.2f%%", successRate)
-	log.Printf("  Average latency: %v", avgDuration)
-	log.Printf("  Throughput: %.2f vertices/sec", throughput)
+	log.Printf("  Total vertices: %d", totalVertices)
+	log.Printf("  Successful inserts: %d", totalSuccess)
+	log.Printf("  Failed inserts: %d", totalErrors)
+	log.Printf("  Success rate: %.2f%%", float64(totalSuccess)*100/float64(totalVertices))
+	log.Printf("  Throughput: %.2f vertices/sec", float64(totalSuccess)/totalDuration.Seconds())
+	log.Printf("  Latency metrics: %s", combinedMetrics.String())
 }
 
 // buildVertexMutation builds a Spanner mutation for inserting a vertex
@@ -530,7 +493,9 @@ func spannerWriteEdgeTest(client *spanner.Client, startZoneID, endZoneID int) {
 
 	var wg sync.WaitGroup
 	startTime := time.Now()
-	metrics := &Metrics{}
+
+	// Initialize metrics
+	metricsCollector := metrics.NewConcurrentMetrics(VUS)
 
 	log.Printf("Starting %d edge write workers...", VUS)
 
@@ -595,15 +560,16 @@ func spannerWriteEdgeTest(client *spanner.Client, startZoneID, endZoneID int) {
 					insertDuration := time.Since(insertStart)
 
 					// Record metrics for the batch
-					success := err == nil
-					metrics.AddOperation(insertDuration, success)
+					metricsCollector.AddDuration(workerID, insertDuration)
 
 					if err != nil {
 						log.Printf("Worker %d edge batch insert failed for player %d (%s): %s",
 							workerID, playerUID, relType, err.Error())
 						workerErrorCount += len(mutations)
+						metricsCollector.AddError(int64(len(mutations)))
 					} else {
 						workerSuccessCount += len(mutations)
+						metricsCollector.AddSuccess(int64(len(mutations)))
 					}
 				}
 
@@ -624,15 +590,18 @@ func spannerWriteEdgeTest(client *spanner.Client, startZoneID, endZoneID int) {
 	totalDuration := time.Since(startTime)
 
 	// Get combined metrics
-	ops, avgDuration, successRate, throughput := metrics.GetStats()
+	combinedMetrics := metricsCollector.CombinedStats()
+	totalSuccess := metricsCollector.GetSuccessCount()
+	totalErrors := metricsCollector.GetErrorCount()
 
 	log.Println("Edge write test completed:")
 	log.Printf("  Total duration: %v", totalDuration)
 	log.Printf("  Total edges expected: %d", totalEdges)
-	log.Printf("  Total operations: %d", ops)
-	log.Printf("  Success rate: %.2f%%", successRate)
-	log.Printf("  Average latency: %v", avgDuration)
-	log.Printf("  Throughput: %.2f edges/sec", throughput)
+	log.Printf("  Successful inserts: %d", totalSuccess)
+	log.Printf("  Failed inserts: %d", totalErrors)
+	log.Printf("  Success rate: %.2f%%", float64(totalSuccess)*100/float64(totalEdges))
+	log.Printf("  Throughput: %.2f edges/sec", float64(totalSuccess)/totalDuration.Seconds())
+	log.Printf("  Latency metrics: %s", combinedMetrics.String())
 }
 
 // buildEdgeMutation builds a Spanner mutation for inserting an edge
