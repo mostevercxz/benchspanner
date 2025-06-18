@@ -27,7 +27,6 @@ import (
 
 const (
 	projectID  = "superb-receiver-463215-f7"
-	instanceID = "graph-demo"
 	databaseID = "mtbench"
 	graphName  = "graph0618"
 )
@@ -43,6 +42,7 @@ var (
 	STR_ATTR_CNT          = 10                             // 字符串属性数量
 	INT_ATTR_CNT          = 90                             // 整数属性数量
 	PreGenerateVertexData = true                           // 是否预生成所有顶点数据
+	instanceID            = "graph-demo"
 )
 
 // VertexData represents a vertex to be inserted
@@ -903,6 +903,11 @@ func initFromEnv() {
 
 	// Recalculate TOTAL_VERTICES after configuration changes
 	TOTAL_VERTICES = ZONES_TOTAL * RECORDS_PER_ZONE
+
+	// Initialize instanceID from environment variable
+	if instID := os.Getenv("INSTANCE_ID"); instID != "" {
+		instanceID = instID
+	}
 
 	log.Printf("Configuration: VUS=%d, ZONE_START=%d, ZONES_TOTAL=%d, RECORDS_PER_ZONE=%d, EDGES_PER_RELATION=%d, TOTAL_VERTICES=%d, PreGenerateVertexData=%v",
 		VUS, ZONE_START, ZONES_TOTAL, RECORDS_PER_ZONE, EDGES_PER_RELATION, TOTAL_VERTICES, PreGenerateVertexData)
