@@ -403,19 +403,8 @@ func countdownOrExit(action string, seconds int) {
 }
 
 // spannerWriteVertexTest performs vertex write testing with multiple goroutines
-func spannerWriteVertexTest(client *spanner.Client) {
+func spannerWriteVertexTest(client *spanner.Client, preGenerate bool) {
 	log.Println("Starting Spanner vertex write test...")
-
-	// Step 1: Generate vertex data in memory
-	log.Println("Generating vertex data in memory...")
-	vertices, err := generateVertexData(ZONE_START, ZONES_TOTAL, RECORDS_PER_ZONE, STR_ATTR_CNT, INT_ATTR_CNT)
-	if err != nil {
-		log.Printf("Failed to generate vertex data: %s", err.Error())
-		return
-	}
-
-	// Step 2: Distribute data among workers
-	log.Printf("Distributing %d vertices among %d workers...", len(vertices), VUS)
 
 	var wg sync.WaitGroup
 	startTime := time.Now()
@@ -423,8 +412,24 @@ func spannerWriteVertexTest(client *spanner.Client) {
 	// Initialize metrics
 	metricsCollector := metrics.NewConcurrentMetrics(VUS)
 
-	// Calculate vertices per worker
-	verticesPerWorker := int(math.Ceil(float64(len(vertices)) / float64(VUS)))
+	totalVertices := ZONES_TOTAL * RECORDS_PER_ZONE
+	verticesPerWorker := int(math.Ceil(float64(totalVertices) / float64(VUS)))
+
+	var vertices []*VertexData
+
+	if preGenerate {
+		// Step 1: Generate vertex data in memory (original behavior)
+		log.Println("Generating vertex data in memory...")
+		var err error
+		vertices, err = generateVertexData(ZONE_START, ZONES_TOTAL, RECORDS_PER_ZONE, STR_ATTR_CNT, INT_ATTR_CNT)
+		if err != nil {
+			log.Printf("Failed to generate vertex data: %s", err.Error())
+			return
+		}
+		log.Printf("Distributing %d vertices among %d workers...", len(vertices), VUS)
+	} else {
+		log.Printf("Workers will generate vertices on-the-fly. Total: %d vertices, %d workers...", totalVertices, VUS)
+	}
 
 	log.Printf("Starting %d write workers...", VUS)
 	countdownOrExit("开始写入顶点", 5)
@@ -437,8 +442,8 @@ func spannerWriteVertexTest(client *spanner.Client) {
 			// Calculate data range for this worker
 			startIdx := workerID * verticesPerWorker
 			endIdx := (workerID + 1) * verticesPerWorker
-			if endIdx > len(vertices) {
-				endIdx = len(vertices)
+			if endIdx > totalVertices {
+				endIdx = totalVertices
 			}
 
 			log.Printf("Worker %d started, processing vertices %d to %d", workerID, startIdx, endIdx-1)
@@ -446,9 +451,42 @@ func spannerWriteVertexTest(client *spanner.Client) {
 			workerSuccessCount := 0
 			workerErrorCount := 0
 
+			// Initialize random generator for this worker (used when preGenerate=false)
+			rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(workerID)))
+			letters := []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+
 			// Process vertices assigned to this worker
 			for i := startIdx; i < endIdx; i++ {
-				vertex := vertices[i]
+				var vertex *VertexData
+
+				if preGenerate {
+					// Use pre-generated data
+					vertex = vertices[i]
+				} else {
+					// Generate vertex on-the-fly
+					zoneOffset := i / RECORDS_PER_ZONE
+					idInZone := i%RECORDS_PER_ZONE + 1
+					zoneID := ZONE_START + zoneOffset
+					uid := (int64(zoneID) << 40) | int64(idInZone)
+
+					// Generate string attributes
+					strAttrs := make([]string, STR_ATTR_CNT)
+					for j := 0; j < STR_ATTR_CNT; j++ {
+						strAttrs[j] = randFixedString(rng, letters, 20)
+					}
+
+					// Generate integer attributes
+					intAttrs := make([]int64, INT_ATTR_CNT)
+					for j := 0; j < INT_ATTR_CNT; j++ {
+						intAttrs[j] = rng.Int63n(10000)
+					}
+
+					vertex = &VertexData{
+						UID:      uid,
+						StrAttrs: strAttrs,
+						IntAttrs: intAttrs,
+					}
+				}
 
 				// Build mutation for this vertex
 				mutation := buildVertexMutation(vertex)
@@ -490,7 +528,6 @@ func spannerWriteVertexTest(client *spanner.Client) {
 	combinedMetrics := metricsCollector.CombinedStats()
 	totalSuccess := metricsCollector.GetSuccessCount()
 	totalErrors := metricsCollector.GetErrorCount()
-	totalVertices := int64(len(vertices))
 
 	log.Println("Vertex write test completed:")
 	log.Printf("  Total duration: %v", totalDuration)
@@ -1043,7 +1080,7 @@ func main() {
 
 	case "write-vertex":
 		log.Println("Running vertex write test...")
-		spannerWriteVertexTest(client)
+		spannerWriteVertexTest(client, true)
 
 	case "write-edge":
 		log.Printf("Running edge write test for zones [%d, %d)...", startZone, endZone)
@@ -1066,7 +1103,7 @@ func main() {
 		}
 
 		// Test vertex write performance
-		spannerWriteVertexTest(client)
+		spannerWriteVertexTest(client, true)
 
 		// Test edge write performance
 		spannerWriteEdgeTest(client, ZONE_START, ZONE_START+ZONES_TOTAL, batchNum)
