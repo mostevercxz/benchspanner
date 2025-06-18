@@ -287,6 +287,50 @@ EDGE TABLES (%s
 	return nil
 }
 
+func spannerTruncateAllData(ctx context.Context, dbPath string) error {
+	// 1. Create a Spanner data client (not an admin client)
+	client, err := spanner.NewClient(ctx, dbPath,
+		option.WithCredentialsFile(`superb-receiver-463215-f7-3b974ed0b146.json`))
+	if err != nil {
+		log.Printf("Failed to create Spanner client: %v", err)
+		return err
+	}
+	defer client.Close()
+
+	// 2. Define the tables to be cleared, in the correct dependency order.
+	// Child tables must be cleared before the parent table.
+	edgeTables := []string{"Rel1", "Rel2", "Rel3", "Rel4", "Rel5"}
+	parentTable := "Users"
+
+	// 3. Delete data from all child (edge) tables first.
+	log.Println("Starting to delete data from edge tables...")
+	for _, table := range edgeTables {
+		// Use PartitionedUpdate for bulk deletes. The `WHERE true` clause selects all rows.
+		stmt := spanner.Statement{SQL: fmt.Sprintf("DELETE FROM %s WHERE true", table)}
+
+		count, err := client.PartitionedUpdate(ctx, stmt)
+		if err != nil {
+			log.Printf("Partitioned DML failed for table %s: %v", table, err)
+			return err
+		}
+		log.Printf("Deleted %d rows from table %s\n", count, table)
+	}
+
+	// 4. Once all child tables are empty, delete data from the parent table.
+	log.Println("Starting to delete data from Users table...")
+	stmt := spanner.Statement{SQL: fmt.Sprintf("DELETE FROM %s WHERE true", parentTable)}
+
+	count, err := client.PartitionedUpdate(ctx, stmt)
+	if err != nil {
+		log.Printf("Partitioned DML failed for table %s: %v", parentTable, err)
+		return err
+	}
+	log.Printf("Deleted %d rows from table %s\n", count, parentTable)
+
+	log.Println("All graph data has been successfully deleted.")
+	return nil
+}
+
 // generateVertexData generates vertex data in memory
 func generateVertexData(zoneStart, zonesTotal, recordsPerZone, strAttrCnt, intAttrCnt int) ([]*VertexData, error) {
 	totalRecords := zonesTotal * recordsPerZone
@@ -750,6 +794,10 @@ func main() {
 	case "write-edge":
 		log.Printf("Running edge write test for zones [%d, %d)...", startZone, endZone)
 		spannerWriteEdgeTest(client, startZone, endZone)
+
+	case "truncate":
+		log.Println("Running truncate test...")
+		spannerTruncateAllData(ctx, dbPath)
 
 	case "all":
 		log.Println("Running all tests...")
