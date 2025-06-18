@@ -19,6 +19,7 @@ import (
 
 	"cloud.google.com/go/spanner"
 	database "cloud.google.com/go/spanner/admin/database/apiv1"
+	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 	databasepb "google.golang.org/genproto/googleapis/spanner/admin/database/v1"
 	"google.golang.org/grpc/status"
@@ -677,6 +678,115 @@ func buildEdgeMutation(relType string, sourceUID, targetUID int64, attrs []int64
 	return spanner.Insert(relType, columns, values)
 }
 
+// spannerReadRelationTest performs edge relation read testing with multiple goroutines – similar logic to polardbReadRelationTest.
+// It scans every vertex within the configured zone range, reads up to 300 destination UIDs connected via
+// Rel1 / Rel4 / Rel5 edges that satisfy attr101>1000, attr102>2000, attr103>4000 and records latency metrics.
+func spannerReadRelationTest(ctx context.Context, dbPath string) {
+	log.Println("Starting Spanner relation read test…")
+
+	totalVertices := ZONES_TOTAL * RECORDS_PER_ZONE
+	iterPerVU := int(math.Ceil(float64(totalVertices) / float64(VUS)))
+
+	var wg sync.WaitGroup
+	startTime := time.Now()
+
+	// Metrics
+	metricsCollector := metrics.NewConcurrentMetrics(VUS)
+
+	log.Printf("Starting %d read workers…", VUS)
+	countdownOrExit("开始读取关系", 5)
+
+	for vu := 0; vu < VUS; vu++ {
+		wg.Add(1)
+		go func(vuIndex int) {
+			defer wg.Done()
+			log.Printf("VU %d started, will process %d vertices", vuIndex, iterPerVU)
+			client, err := spanner.NewClient(ctx, dbPath, option.WithCredentialsFile(`superb-receiver-463215-f7-3b974ed0b146.json`))
+			if err != nil {
+				log.Printf("Failed to create Spanner client: %v", err)
+				return
+			}
+			defer client.Close()
+
+			ctx := context.Background()
+
+			for iter := 0; iter < iterPerVU; iter++ {
+				idx := vuIndex*iterPerVU + iter
+				if idx >= totalVertices {
+					break
+				}
+
+				// Derive UID from idx
+				zoneOffset := idx / RECORDS_PER_ZONE
+				idInZone := idx%RECORDS_PER_ZONE + 1
+				zoneID := ZONE_START + zoneOffset
+				uid := (int64(zoneID) << 40) | int64(idInZone)
+
+				stmt := spanner.Statement{
+					SQL: fmt.Sprintf(`
+					GRAPH %s
+					MATCH (a:User {uid: %d})-[e:Rel1|Rel4|Rel5]->(b:User)
+					WHERE e.attr101 > 1000 AND e.attr102 > 2000 AND e.attr103 > 4000
+					RETURN b.uid
+					LIMIT 300`, graphName, uid),
+				}
+
+				queryStart := time.Now()
+				// Create a new single-use read-only transaction for each query
+				ro := client.Single()
+				iterRows := ro.Query(ctx, stmt)
+				queryDuration := time.Since(queryStart)
+				metricsCollector.AddDuration(vuIndex, queryDuration)
+
+				// Consume rows and capture errors
+				rowCnt := 0
+				success := true
+				for {
+					_, err := iterRows.Next()
+					if err == iterator.Done {
+						break
+					}
+					if err != nil {
+						log.Printf("VU %d query failed for uid %d: %v", vuIndex, uid, err)
+						metricsCollector.AddError(1)
+						success = false
+						break
+					}
+					rowCnt++
+				}
+				iterRows.Stop()
+				ro.Close() // Close the transaction after each query
+				if success {
+					metricsCollector.AddSuccess(1)
+				}
+
+				// Log progress every 100 queries
+				if iter%10 == 0 {
+					log.Printf("VU %d, iter %d, uid %d, query time: %v, rows: %d", vuIndex, iter, uid, queryDuration, rowCnt)
+				}
+			}
+
+			log.Printf("VU %d completed", vuIndex)
+		}(vu)
+	}
+
+	wg.Wait()
+	totalDuration := time.Since(startTime)
+
+	combinedMetrics := metricsCollector.CombinedStats()
+	totalSuccess := metricsCollector.GetSuccessCount()
+	totalErrors := metricsCollector.GetErrorCount()
+
+	log.Println("Relation read test completed:")
+	log.Printf("  Total duration: %v", totalDuration)
+	log.Printf("  Total queries: %d", totalSuccess+totalErrors)
+	log.Printf("  Successful queries: %d", totalSuccess)
+	log.Printf("  Failed queries: %d", totalErrors)
+	log.Printf("  Success rate: %.2f%%", float64(totalSuccess)*100/float64(totalSuccess+totalErrors))
+	log.Printf("  Throughput: %.2f queries/sec", float64(totalSuccess)/totalDuration.Seconds())
+	log.Printf("  Latency metrics: %s", combinedMetrics.String())
+}
+
 // initFromEnv initializes configuration from environment variables
 func initFromEnv() {
 	// Initialize VUS from environment variable
@@ -767,7 +877,7 @@ func main() {
 	var testType string
 	var startZone, endZone int
 	var batchNum int
-	flag.StringVar(&testType, "test", "setup", "Test type to run: setup, write-vertex, write-edge, all")
+	flag.StringVar(&testType, "test", "setup", "Test type to run: setup, write-vertex, write-edge, relation, all")
 	flag.IntVar(&startZone, "start-zone", ZONE_START, "Start zone ID for edge test")
 	flag.IntVar(&endZone, "end-zone", ZONE_START+ZONES_TOTAL, "End zone ID for edge test")
 	flag.IntVar(&batchNum, "batch-num", EDGES_PER_RELATION, "Number of edges per batch for edge write test")
@@ -853,6 +963,10 @@ func main() {
 		log.Println("Running truncate test...")
 		spannerTruncateAllData(ctx, dbPath)
 
+	case "relation":
+		log.Println("Running relation read test...")
+		spannerReadRelationTest(ctx, dbPath)
+
 	case "all":
 		log.Println("Running all tests...")
 
@@ -867,9 +981,12 @@ func main() {
 		// Test edge write performance
 		spannerWriteEdgeTest(client, ZONE_START, ZONE_START+ZONES_TOTAL, batchNum)
 
+		// Test relation read performance
+		spannerReadRelationTest(ctx, dbPath)
+
 	default:
 		log.Printf("Unknown test type: %s", testType)
-		log.Println("Available test types: setup, write-vertex, write-edge, all")
+		log.Println("Available test types: setup, write-vertex, write-edge, relation, all")
 		os.Exit(1)
 	}
 
