@@ -1,7 +1,7 @@
 package main
 
 import (
-	"benchspanner/becnh-polardb-graph/metrics"
+	"benchspanner/metrics"
 	"context"
 	"flag"
 	"fmt"
@@ -53,7 +53,7 @@ type VertexData struct {
 
 // setupGraphSpanner creates all tables, indexes, TTL policies, and the property graph.
 func setupGraphSpanner(ctx context.Context) error {
-	admin, err := database.NewDatabaseAdminClient(ctx)
+	admin, err := database.NewDatabaseAdminClient(ctx, option.WithCredentialsFile(`superb-receiver-463215-f7-3b974ed0b146.json`))
 	if err != nil {
 		if st, ok := status.FromError(err); ok {
 			log.Printf("NewDatabaseAdminClient failed - Code: %v (%d), Message: %s",
@@ -256,6 +256,11 @@ EDGE TABLES (%s
 )`, graphName, strings.Join(userProps, ", "), strings.Join(edgeDefs, ","))
 
 	ddl = append(ddl, graphDDL)
+
+	// print all the ddl to the terminal
+	log.Println(strings.Join(ddl, "\n\n"))
+
+	time.Sleep(100 * time.Second)
 
 	// 5. Push DDL to Spanner
 	op, err := admin.UpdateDatabaseDdl(ctx, &databasepb.UpdateDatabaseDdlRequest{
@@ -714,7 +719,16 @@ func spannerReadRelationTest(ctx context.Context, dbPath string) {
 			GRAPH %s
 			MATCH (a:User {uid:@uid})-[e:Rel1|Rel4|Rel5]->(b:User)
 			WHERE e.attr101 > @a101 AND e.attr102 > @a102 AND e.attr103 > @a103
-			RETURN b.uid
+			RETURN b.uid, b.attr1, b.attr2, b.attr3, b.attr4, b.attr5, b.attr6, b.attr7, b.attr8, b.attr9, b.attr10,
+			       b.attr11, b.attr12, b.attr13, b.attr14, b.attr15, b.attr16, b.attr17, b.attr18, b.attr19, b.attr20,
+			       b.attr21, b.attr22, b.attr23, b.attr24, b.attr25, b.attr26, b.attr27, b.attr28, b.attr29, b.attr30,
+			       b.attr31, b.attr32, b.attr33, b.attr34, b.attr35, b.attr36, b.attr37, b.attr38, b.attr39, b.attr40,
+			       b.attr41, b.attr42, b.attr43, b.attr44, b.attr45, b.attr46, b.attr47, b.attr48, b.attr49, b.attr50,
+			       b.attr51, b.attr52, b.attr53, b.attr54, b.attr55, b.attr56, b.attr57, b.attr58, b.attr59, b.attr60,
+			       b.attr61, b.attr62, b.attr63, b.attr64, b.attr65, b.attr66, b.attr67, b.attr68, b.attr69, b.attr70,
+			       b.attr71, b.attr72, b.attr73, b.attr74, b.attr75, b.attr76, b.attr77, b.attr78, b.attr79, b.attr80,
+			       b.attr81, b.attr82, b.attr83, b.attr84, b.attr85, b.attr86, b.attr87, b.attr88, b.attr89, b.attr90,
+			       b.attr91, b.attr92, b.attr93, b.attr94, b.attr95, b.attr96, b.attr97, b.attr98, b.attr99, b.attr100
 			LIMIT 300`
 
 			stmtTpl := spanner.Statement{
@@ -750,7 +764,7 @@ func spannerReadRelationTest(ctx context.Context, dbPath string) {
 				rowCnt := 0
 				success := true
 				for {
-					_, err := iterRows.Next()
+					row, err := iterRows.Next()
 					if err == iterator.Done {
 						break
 					}
@@ -759,6 +773,7 @@ func spannerReadRelationTest(ctx context.Context, dbPath string) {
 						success = false
 						break
 					}
+					printSpannerRow(row)
 					rowCnt++
 				}
 				iterRows.Stop()
@@ -875,6 +890,67 @@ func setupLogging() *os.File {
 
 	log.Printf("Logging initialized - output to terminal and file: %s", logFilePath)
 	return logFile
+}
+
+// Add helper printer near other helpers
+func printSpannerRow(row *spanner.Row) {
+	if row == nil {
+		log.Println("<nil row>")
+		return
+	}
+
+	cols := row.Size()
+	var sb strings.Builder
+	sb.WriteString("Row: {")
+	for i := 0; i < cols; i++ {
+		if i > 0 {
+			sb.WriteString(", ")
+		}
+		colName := row.ColumnName(i)
+
+		// Try to decode as different types based on column name or try common types
+		var value interface{}
+		var err error
+
+		// For uid columns, try INT64 first
+		if strings.Contains(colName, "uid") {
+			var intVal int64
+			err = row.Column(i, &intVal)
+			if err == nil {
+				value = intVal
+			}
+		} else if strings.HasPrefix(colName, "attr1") && len(colName) <= 6 && colName != "attr11" && colName != "attr12" && colName != "attr13" && colName != "attr14" && colName != "attr15" && colName != "attr16" && colName != "attr17" && colName != "attr18" && colName != "attr19" {
+			// attr1-attr10 are STRING columns
+			var strVal spanner.NullString
+			err = row.Column(i, &strVal)
+			if err == nil {
+				if strVal.Valid {
+					value = strVal.StringVal
+				} else {
+					value = "<NULL>"
+				}
+			}
+		} else {
+			// attr11-attr100 are INT64 columns
+			var intVal spanner.NullInt64
+			err = row.Column(i, &intVal)
+			if err == nil {
+				if intVal.Valid {
+					value = intVal.Int64
+				} else {
+					value = "<NULL>"
+				}
+			}
+		}
+
+		if err != nil {
+			sb.WriteString(fmt.Sprintf("%s: <err %v>", colName, err))
+		} else {
+			sb.WriteString(fmt.Sprintf("%s: %v", colName, value))
+		}
+	}
+	sb.WriteString("}")
+	log.Println(sb.String())
 }
 
 func main() {
