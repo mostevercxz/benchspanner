@@ -158,7 +158,7 @@ CREATE TABLE Users (
 		`CREATE INDEX user_attr11_attr12_attr13_idx
 		   ON Users(attr11, attr12, attr13)`,
 		`ALTER TABLE Users
-		   ALTER ROW DELETION POLICY (OLDER_THAN(expire_time, INTERVAL 8 DAY))`,
+		   ADD ROW DELETION POLICY (OLDER_THAN(expire_time, INTERVAL 8 DAY))`,
 	)
 
 	// 3. Edge tables + indexes + TTL
@@ -185,12 +185,12 @@ CREATE TABLE %s (
 		ddl = append(ddl, fmt.Sprintf(
 			`CREATE INDEX %s_src_attr_covering_idx
 				   ON %s(src_uid, attr101, attr102, attr103)
-				   INCLUDE (dst_uid)`,
+				   STORING  (dst_uid)`,
 			strings.ToLower(label), label))
 
 		ddl = append(ddl, fmt.Sprintf(
 			`ALTER TABLE %s
-			   ALTER ROW DELETION POLICY (OLDER_THAN(expire_time, INTERVAL 8 DAY))`,
+			   ADD ROW DELETION POLICY (OLDER_THAN(expire_time, INTERVAL 8 DAY))`,
 			label))
 	}
 
