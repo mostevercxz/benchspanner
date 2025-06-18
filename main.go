@@ -46,6 +46,12 @@ func setupGraphSpanner(ctx context.Context) error {
 
 	// 1. Clean slate
 	ddl = append(ddl, fmt.Sprintf("DROP PROPERTY GRAPH IF EXISTS %s", graphName))
+	edgeLabels := []string{"Rel1", "Rel2", "Rel3", "Rel4", "Rel5"}
+	for _, label := range edgeLabels {
+		ddl = append(ddl, fmt.Sprintf("DROP TABLE IF EXISTS %s", label))
+	}
+	ddl = append(ddl, "DROP INDEX IF EXISTS user_attr11_attr12_attr13_idx")
+	ddl = append(ddl, "DROP TABLE IF EXISTS Users")
 
 	// 2. Vertex table
 	ddl = append(ddl, `
@@ -161,12 +167,12 @@ CREATE TABLE Users (
 		   ADD ROW DELETION POLICY (OLDER_THAN(expire_time, INTERVAL 8 DAY))`,
 	)
 
-	// 3. Edge tables + indexes + TTL
-	edgeLabels := []string{"Rel1", "Rel2", "Rel3", "Rel4", "Rel5"}
+	// 3. Edge tables + indexes + TTL (MODIFIED)
 	for _, label := range edgeLabels {
+		// FIXED: Renamed src_uid to uid to match parent table's PK for interleaving
 		ddl = append(ddl, fmt.Sprintf(`
 CREATE TABLE %s (
-  src_uid      INT64      NOT NULL,
+  uid          INT64      NOT NULL,
   dst_uid      INT64      NOT NULL,
   attr101      INT64,
   attr102      INT64,
@@ -179,13 +185,13 @@ CREATE TABLE %s (
   attr109      INT64,
   attr110      INT64,
   expire_time  TIMESTAMP OPTIONS (allow_commit_timestamp=true)
-) PRIMARY KEY (src_uid, dst_uid),
- INTERLEAVE IN PARENT Users ON DELETE CASCADE`, label))
+) PRIMARY KEY (uid, dst_uid),
+  INTERLEAVE IN PARENT Users ON DELETE CASCADE`, label))
 
+		// FIXED: Index now references the renamed 'uid' column
 		ddl = append(ddl, fmt.Sprintf(
-			`CREATE INDEX %s_src_attr_covering_idx
-				   ON %s(src_uid, attr101, attr102, attr103)
-				   STORING  (dst_uid)`,
+			`CREATE INDEX %s_uid_attr_covering_idx
+			   ON %s(uid, attr101, attr102, attr103)`,
 			strings.ToLower(label), label))
 
 		ddl = append(ddl, fmt.Sprintf(
@@ -194,17 +200,17 @@ CREATE TABLE %s (
 			label))
 	}
 
-	// 4. Property graph definition
+	// 4. Property graph definition (MODIFIED)
 	var edgeDefs []string
 	for _, l := range edgeLabels {
+		// FIXED: SOURCE KEY now correctly references 'uid'
 		edgeDefs = append(edgeDefs, fmt.Sprintf(`
   %s
-    SOURCE KEY (src_uid) REFERENCES Users(uid)
+    SOURCE KEY (uid) REFERENCES Users(uid)
     DESTINATION KEY (dst_uid) REFERENCES Users(uid)
     LABEL %s PROPERTIES (attr101, attr102, attr103, attr104, attr105, attr106, attr107, attr108, attr109, attr110)`, l, l))
 	}
 
-	// Build all User properties list
 	userProps := []string{"uid"}
 	for i := 1; i <= 100; i++ {
 		userProps = append(userProps, fmt.Sprintf("attr%d", i))
