@@ -5,11 +5,13 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"math/rand"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -719,7 +721,45 @@ func initFromEnv() {
 		VUS, ZONE_START, ZONES_TOTAL, RECORDS_PER_ZONE, EDGES_PER_RELATION, TOTAL_VERTICES)
 }
 
+// setupLogging configures logging to output to both terminal and file
+func setupLogging() *os.File {
+	// Create logs directory if it doesn't exist
+	logsDir := "logs"
+	if err := os.MkdirAll(logsDir, 0755); err != nil {
+		log.Printf("Failed to create logs directory: %v", err)
+		return nil
+	}
+
+	// Create log file with timestamp
+	timestamp := time.Now().Format("2006-01-02_15")
+	logFileName := fmt.Sprintf("benchmark_%s.log", timestamp)
+	logFilePath := filepath.Join(logsDir, logFileName)
+
+	// Open log file
+	logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		log.Printf("Failed to open log file %s: %v", logFilePath, err)
+		return nil
+	}
+
+	// Create MultiWriter to write to both stdout and file
+	multiWriter := io.MultiWriter(os.Stdout, logFile)
+
+	// Set log output to MultiWriter
+	log.SetOutput(multiWriter)
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+
+	log.Printf("Logging initialized - output to terminal and file: %s", logFilePath)
+	return logFile
+}
+
 func main() {
+	// Setup logging to output to both terminal and file
+	logFile := setupLogging()
+	if logFile != nil {
+		defer logFile.Close()
+	}
+
 	// Initialize configuration from environment variables
 	initFromEnv()
 
