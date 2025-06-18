@@ -51,9 +51,106 @@ func setupGraphSpanner(ctx context.Context) error {
 	ddl = append(ddl, `
 CREATE TABLE Users (
   uid          INT64  NOT NULL,
+  attr1        STRING(20),
+  attr2        STRING(20),
+  attr3        STRING(20),
+  attr4        STRING(20),
+  attr5        STRING(20),
+  attr6        STRING(20),
+  attr7        STRING(20),
+  attr8        STRING(20),
+  attr9        STRING(20),
+  attr10       STRING(20),
   attr11       INT64,
   attr12       INT64,
   attr13       INT64,
+  attr14       INT64,
+  attr15       INT64,
+  attr16       INT64,
+  attr17       INT64,
+  attr18       INT64,
+  attr19       INT64,
+  attr20       INT64,
+  attr21       INT64,
+  attr22       INT64,
+  attr23       INT64,
+  attr24       INT64,
+  attr25       INT64,
+  attr26       INT64,
+  attr27       INT64,
+  attr28       INT64,
+  attr29       INT64,
+  attr30       INT64,
+  attr31       INT64,
+  attr32       INT64,
+  attr33       INT64,
+  attr34       INT64,
+  attr35       INT64,
+  attr36       INT64,
+  attr37       INT64,
+  attr38       INT64,
+  attr39       INT64,
+  attr40       INT64,
+  attr41       INT64,
+  attr42       INT64,
+  attr43       INT64,
+  attr44       INT64,
+  attr45       INT64,
+  attr46       INT64,
+  attr47       INT64,
+  attr48       INT64,
+  attr49       INT64,
+  attr50       INT64,
+  attr51       INT64,
+  attr52       INT64,
+  attr53       INT64,
+  attr54       INT64,
+  attr55       INT64,
+  attr56       INT64,
+  attr57       INT64,
+  attr58       INT64,
+  attr59       INT64,
+  attr60       INT64,
+  attr61       INT64,
+  attr62       INT64,
+  attr63       INT64,
+  attr64       INT64,
+  attr65       INT64,
+  attr66       INT64,
+  attr67       INT64,
+  attr68       INT64,
+  attr69       INT64,
+  attr70       INT64,
+  attr71       INT64,
+  attr72       INT64,
+  attr73       INT64,
+  attr74       INT64,
+  attr75       INT64,
+  attr76       INT64,
+  attr77       INT64,
+  attr78       INT64,
+  attr79       INT64,
+  attr80       INT64,
+  attr81       INT64,
+  attr82       INT64,
+  attr83       INT64,
+  attr84       INT64,
+  attr85       INT64,
+  attr86       INT64,
+  attr87       INT64,
+  attr88       INT64,
+  attr89       INT64,
+  attr90       INT64,
+  attr91       INT64,
+  attr92       INT64,
+  attr93       INT64,
+  attr94       INT64,
+  attr95       INT64,
+  attr96       INT64,
+  attr97       INT64,
+  attr98       INT64,
+  attr99       INT64,
+  attr100      INT64,
   expire_time  TIMESTAMP OPTIONS (allow_commit_timestamp=true)
 ) PRIMARY KEY (uid)`)
 
@@ -69,18 +166,26 @@ CREATE TABLE Users (
 	for _, label := range edgeLabels {
 		ddl = append(ddl, fmt.Sprintf(`
 CREATE TABLE %s (
-  edge_id      STRING(36) NOT NULL,
   src_uid      INT64      NOT NULL,
   dst_uid      INT64      NOT NULL,
   attr101      INT64,
   attr102      INT64,
   attr103      INT64,
+  attr104      INT64,
+  attr105      INT64,
+  attr106      INT64,
+  attr107      INT64,
+  attr108      INT64,
+  attr109      INT64,
+  attr110      INT64,
   expire_time  TIMESTAMP OPTIONS (allow_commit_timestamp=true)
-) PRIMARY KEY (edge_id)`, label))
+) PRIMARY KEY (src_uid, dst_uid),
+ INTERLEAVE IN PARENT Users ON DELETE CASCADE`, label))
 
 		ddl = append(ddl, fmt.Sprintf(
-			`CREATE INDEX %s_attr101_attr102_attr103_idx
-			   ON %s(attr101, attr102, attr103)`,
+			`CREATE INDEX %s_src_attr_covering_idx
+				   ON %s(src_uid, attr101, attr102, attr103)
+				   INCLUDE (dst_uid)`,
 			strings.ToLower(label), label))
 
 		ddl = append(ddl, fmt.Sprintf(
@@ -96,15 +201,22 @@ CREATE TABLE %s (
   %s
     SOURCE KEY (src_uid) REFERENCES Users(uid)
     DESTINATION KEY (dst_uid) REFERENCES Users(uid)
-    LABEL %s PROPERTIES (attr101, attr102, attr103)`, l, l))
+    LABEL %s PROPERTIES (attr101, attr102, attr103, attr104, attr105, attr106, attr107, attr108, attr109, attr110)`, l, l))
 	}
+
+	// Build all User properties list
+	userProps := []string{"uid"}
+	for i := 1; i <= 100; i++ {
+		userProps = append(userProps, fmt.Sprintf("attr%d", i))
+	}
+
 	graphDDL := fmt.Sprintf(`CREATE PROPERTY GRAPH %s
 NODE TABLES (
   Users KEY (uid)
-    LABEL User PROPERTIES (uid, attr11, attr12, attr13)
+    LABEL User PROPERTIES (%s)
 )
 EDGE TABLES (%s
-)`, graphName, strings.Join(edgeDefs, ","))
+)`, graphName, strings.Join(userProps, ", "), strings.Join(edgeDefs, ","))
 
 	ddl = append(ddl, graphDDL)
 
