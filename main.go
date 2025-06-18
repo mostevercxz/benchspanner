@@ -594,8 +594,8 @@ func spannerWriteEdgeTest(client *spanner.Client, startZoneID, endZoneID int) {
 							edgeAttrs[j] = rng.Int63n(10000)
 						}
 
-						log.Printf("Worker %d edge batch insert for player %d (%s): targetzoneid=%d, targetid=%d	",
-							workerID, playerUID, relType, targetZoneID, targetID)
+						// log.Printf("Worker %d edge batch insert for player %d (%s): targetzoneid=%d, targetid=%d	",
+						// 	workerID, playerUID, relType, targetZoneID, targetID)
 
 						// Build mutation for this edge
 						mutation := buildEdgeMutation(relType, playerUID, targetUID, edgeAttrs)
