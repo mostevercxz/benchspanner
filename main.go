@@ -31,14 +31,13 @@ const (
 
 // 基准测试配置
 var (
-	VUS              = 10                 // 并发用户数
-	ZONE_START       = 100                // 起始区域ID
-	ZONES_TOTAL      = 10                 // 总区域数
-	RECORDS_PER_ZONE = 80                 // 每区域记录数
-	TOTAL_VERTICES   = ZONES_TOTAL * 8000 // 总顶点数（使用固定的 IDS_PER_ZONE = 8000）
-	IDS_PER_ZONE     = 8000               // 每区域ID数量
-	STR_ATTR_CNT     = 10                 // 字符串属性数量
-	INT_ATTR_CNT     = 90                 // 整数属性数量
+	VUS              = 10                             // 并发用户数
+	ZONE_START       = 100                            // 起始区ID
+	ZONES_TOTAL      = 10                             // 总区数
+	RECORDS_PER_ZONE = 80                             // 每区玩家数
+	TOTAL_VERTICES   = ZONES_TOTAL * RECORDS_PER_ZONE // 总顶点数（使用固定的 IDS_PER_ZONE = 8000）
+	STR_ATTR_CNT     = 10                             // 字符串属性数量
+	INT_ATTR_CNT     = 90                             // 整数属性数量
 )
 
 // VertexData represents a vertex to be inserted
@@ -482,10 +481,10 @@ func spannerWriteEdgeTest(client *spanner.Client, startZoneID, endZoneID int) {
 
 	// Calculate total zones and players
 	totalZones := endZoneID - startZoneID
-	totalPlayers := int64(totalZones * IDS_PER_ZONE)
+	totalPlayers := int64(totalZones * RECORDS_PER_ZONE)
 	totalEdges := totalPlayers * 5 * 100 // 5种关系，每种100条边
 
-	log.Printf("Total zones: %d, players per zone: %d", totalZones, IDS_PER_ZONE)
+	log.Printf("Total zones: %d, players per zone: %d", totalZones, RECORDS_PER_ZONE)
 	log.Printf("Total players: %d, Total edges to insert: %d", totalPlayers, totalEdges)
 
 	// Assign players to workers
@@ -498,6 +497,7 @@ func spannerWriteEdgeTest(client *spanner.Client, startZoneID, endZoneID int) {
 	metricsCollector := metrics.NewConcurrentMetrics(VUS)
 
 	log.Printf("Starting %d edge write workers...", VUS)
+	countdownOrExit("开始写入边", 5)
 
 	for worker := 0; worker < VUS; worker++ {
 		wg.Add(1)
@@ -521,8 +521,8 @@ func spannerWriteEdgeTest(client *spanner.Client, startZoneID, endZoneID int) {
 			// Process players assigned to this worker
 			for playerIndex := workerStartIndex; playerIndex < workerEndIndex; playerIndex++ {
 				// Convert playerIndex to corresponding UID
-				zoneOffset := playerIndex / IDS_PER_ZONE
-				idInZone := playerIndex%IDS_PER_ZONE + 1
+				zoneOffset := playerIndex / RECORDS_PER_ZONE
+				idInZone := playerIndex%RECORDS_PER_ZONE + 1
 				currentZoneID := startZoneID + zoneOffset
 				playerUID := (int64(currentZoneID) << 40) | int64(idInZone)
 
@@ -536,7 +536,7 @@ func spannerWriteEdgeTest(client *spanner.Client, startZoneID, endZoneID int) {
 					for i := 0; i < 100; i++ {
 						// Randomly select target UID
 						targetZoneID := ZONE_START + rng.Intn(ZONES_TOTAL)
-						targetID := 1 + rng.Intn(IDS_PER_ZONE)
+						targetID := 1 + rng.Intn(RECORDS_PER_ZONE)
 						targetUID := (int64(targetZoneID) << 40) | int64(targetID)
 
 						if targetUID == playerUID {
@@ -548,6 +548,9 @@ func spannerWriteEdgeTest(client *spanner.Client, startZoneID, endZoneID int) {
 						for j := 0; j < 10; j++ {
 							edgeAttrs[j] = rng.Int63n(10000)
 						}
+
+						log.Printf("Worker %d edge batch insert for player %d (%s): targetzoneid=%d, targetid=%d	",
+							workerID, playerUID, relType, targetZoneID, targetID)
 
 						// Build mutation for this edge
 						mutation := buildEdgeMutation(relType, playerUID, targetUID, edgeAttrs)
@@ -654,7 +657,7 @@ func initFromEnv() {
 	}
 
 	// Recalculate TOTAL_VERTICES after configuration changes
-	TOTAL_VERTICES = ZONES_TOTAL * IDS_PER_ZONE
+	TOTAL_VERTICES = ZONES_TOTAL * RECORDS_PER_ZONE
 
 	log.Printf("Configuration: VUS=%d, ZONE_START=%d, ZONES_TOTAL=%d, RECORDS_PER_ZONE=%d, TOTAL_VERTICES=%d",
 		VUS, ZONE_START, ZONES_TOTAL, RECORDS_PER_ZONE, TOTAL_VERTICES)
