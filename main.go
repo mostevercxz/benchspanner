@@ -31,13 +31,14 @@ const (
 
 // 基准测试配置
 var (
-	VUS              = 10                             // 并发用户数
-	ZONE_START       = 100                            // 起始区ID
-	ZONES_TOTAL      = 10                             // 总区数
-	RECORDS_PER_ZONE = 80                             // 每区玩家数
-	TOTAL_VERTICES   = ZONES_TOTAL * RECORDS_PER_ZONE // 总顶点数（使用固定的 IDS_PER_ZONE = 8000）
-	STR_ATTR_CNT     = 10                             // 字符串属性数量
-	INT_ATTR_CNT     = 90                             // 整数属性数量
+	VUS                = 10                             // 并发用户数
+	ZONE_START         = 100                            // 起始区ID
+	ZONES_TOTAL        = 10                             // 总区数
+	RECORDS_PER_ZONE   = 80                             // 每区玩家数
+	EDGES_PER_RELATION = 100                            // 每种关系的边数
+	TOTAL_VERTICES     = ZONES_TOTAL * RECORDS_PER_ZONE // 总顶点数（使用固定的 IDS_PER_ZONE = 8000）
+	STR_ATTR_CNT       = 10                             // 字符串属性数量
+	INT_ATTR_CNT       = 90                             // 整数属性数量
 )
 
 // VertexData represents a vertex to be inserted
@@ -526,7 +527,7 @@ func spannerWriteEdgeTest(client *spanner.Client, startZoneID, endZoneID int) {
 	// Calculate total zones and players
 	totalZones := endZoneID - startZoneID
 	totalPlayers := int64(totalZones * RECORDS_PER_ZONE)
-	totalEdges := totalPlayers * 5 * 100 // 5种关系，每种100条边
+	totalEdges := totalPlayers * 5 * int64(EDGES_PER_RELATION) // 5种关系，每种边数由EDGES_PER_RELATION配置
 
 	log.Printf("Total zones: %d, players per zone: %d", totalZones, RECORDS_PER_ZONE)
 	log.Printf("Total players: %d, Total edges to insert: %d", totalPlayers, totalEdges)
@@ -574,10 +575,10 @@ func spannerWriteEdgeTest(client *spanner.Client, startZoneID, endZoneID int) {
 				relationTypes := []string{"Rel1", "Rel2", "Rel3", "Rel4", "Rel5"}
 
 				for _, relType := range relationTypes {
-					// Create mutations for 100 edges of this relationship type
+					// Create mutations for EDGES_PER_RELATION edges of this relationship type
 					var mutations []*spanner.Mutation
 
-					for i := 0; i < 100; i++ {
+					for i := 0; i < EDGES_PER_RELATION; i++ {
 						// Randomly select target UID
 						targetZoneID := ZONE_START + rng.Intn(ZONES_TOTAL)
 						targetID := 1 + rng.Intn(RECORDS_PER_ZONE)
@@ -700,11 +701,18 @@ func initFromEnv() {
 		}
 	}
 
+	// Initialize EDGES_PER_RELATION from environment variable
+	if edgesPerRelationStr := os.Getenv("EDGES_PER_RELATION"); edgesPerRelationStr != "" {
+		if parsedEdgesPerRelation, err := strconv.Atoi(edgesPerRelationStr); err == nil && parsedEdgesPerRelation > 0 {
+			EDGES_PER_RELATION = parsedEdgesPerRelation
+		}
+	}
+
 	// Recalculate TOTAL_VERTICES after configuration changes
 	TOTAL_VERTICES = ZONES_TOTAL * RECORDS_PER_ZONE
 
-	log.Printf("Configuration: VUS=%d, ZONE_START=%d, ZONES_TOTAL=%d, RECORDS_PER_ZONE=%d, TOTAL_VERTICES=%d",
-		VUS, ZONE_START, ZONES_TOTAL, RECORDS_PER_ZONE, TOTAL_VERTICES)
+	log.Printf("Configuration: VUS=%d, ZONE_START=%d, ZONES_TOTAL=%d, RECORDS_PER_ZONE=%d, EDGES_PER_RELATION=%d, TOTAL_VERTICES=%d",
+		VUS, ZONE_START, ZONES_TOTAL, RECORDS_PER_ZONE, EDGES_PER_RELATION, TOTAL_VERTICES)
 }
 
 func main() {
