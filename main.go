@@ -433,7 +433,7 @@ func spannerWriteVertexTest(client *spanner.Client, preGenerate bool) {
 	}
 
 	log.Printf("Starting %d write workers...", VUS)
-	maxDelay := 100 * time.Microsecond
+	// maxDelay := 100 * time.Microsecond
 	// co := spanner.CommitOptions{MaxCommitDelay: &maxDelay}
 	// applyOpts := []spanner.ApplyOption{
 	// 	// spanner.ApplyAtLeastOnce(),     // 1-RPC fast path
