@@ -1,7 +1,7 @@
 package main
 
 import (
-	"benchspanner/metrics"
+	"benchspanner/becnh-polardb-graph/metrics"
 	"context"
 	"flag"
 	"fmt"
