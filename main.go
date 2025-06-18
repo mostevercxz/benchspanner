@@ -735,8 +735,6 @@ func spannerReadRelationTest(ctx context.Context, dbPath string) {
 				// Create a new single-use read-only transaction for each query
 				ro := client.Single()
 				iterRows := ro.Query(ctx, stmt)
-				queryDuration := time.Since(queryStart)
-				metricsCollector.AddDuration(vuIndex, queryDuration)
 
 				// Consume rows and capture errors
 				rowCnt := 0
@@ -748,7 +746,6 @@ func spannerReadRelationTest(ctx context.Context, dbPath string) {
 					}
 					if err != nil {
 						log.Printf("VU %d query failed for uid %d: %v", vuIndex, uid, err)
-						metricsCollector.AddError(1)
 						success = false
 						break
 					}
@@ -756,8 +753,15 @@ func spannerReadRelationTest(ctx context.Context, dbPath string) {
 				}
 				iterRows.Stop()
 				ro.Close() // Close the transaction after each query
+
+				// Measure the complete query duration including result consumption
+				queryDuration := time.Since(queryStart)
+				metricsCollector.AddDuration(vuIndex, queryDuration)
+
 				if success {
 					metricsCollector.AddSuccess(1)
+				} else {
+					metricsCollector.AddError(1)
 				}
 
 				// Log progress every 100 queries
