@@ -521,8 +521,8 @@ func buildVertexMutation(vertex *VertexData) *spanner.Mutation {
 }
 
 // spannerWriteEdgeTest performs edge write testing with multiple goroutines
-func spannerWriteEdgeTest(client *spanner.Client, startZoneID, endZoneID int) {
-	log.Printf("Starting Spanner edge write test for zones [%d, %d)...", startZoneID, endZoneID)
+func spannerWriteEdgeTest(client *spanner.Client, startZoneID, endZoneID int, batchNum int) {
+	log.Printf("Starting Spanner edge write test for zones [%d, %d) with batch size %d...", startZoneID, endZoneID, batchNum)
 
 	// Calculate total zones and players
 	totalZones := endZoneID - startZoneID
@@ -594,30 +594,32 @@ func spannerWriteEdgeTest(client *spanner.Client, startZoneID, endZoneID int) {
 							edgeAttrs[j] = rng.Int63n(10000)
 						}
 
-						// log.Printf("Worker %d edge batch insert for player %d (%s): targetzoneid=%d, targetid=%d	",
-						// 	workerID, playerUID, relType, targetZoneID, targetID)
-
 						// Build mutation for this edge
 						mutation := buildEdgeMutation(relType, playerUID, targetUID, edgeAttrs)
 						mutations = append(mutations, mutation)
-					}
 
-					// Execute batch insert for this relation type
-					insertStart := time.Now()
-					_, err := client.Apply(context.Background(), mutations)
-					insertDuration := time.Since(insertStart)
+						// Execute batch when reaching batchNum or at the end
+						if len(mutations) >= batchNum || i == EDGES_PER_RELATION-1 {
+							insertStart := time.Now()
+							_, err := client.Apply(context.Background(), mutations)
+							insertDuration := time.Since(insertStart)
 
-					// Record metrics for the batch
-					metricsCollector.AddDuration(workerID, insertDuration)
+							// Record metrics for the batch
+							metricsCollector.AddDuration(workerID, insertDuration)
 
-					if err != nil {
-						log.Printf("Worker %d edge batch insert failed for player %d (%s): %s",
-							workerID, playerUID, relType, err.Error())
-						workerErrorCount += len(mutations)
-						metricsCollector.AddError(int64(len(mutations)))
-					} else {
-						workerSuccessCount += len(mutations)
-						metricsCollector.AddSuccess(int64(len(mutations)))
+							if err != nil {
+								log.Printf("Worker %d edge batch insert failed for player %d (%s), batch size %d: %s",
+									workerID, playerUID, relType, len(mutations), err.Error())
+								workerErrorCount += len(mutations)
+								metricsCollector.AddError(int64(len(mutations)))
+							} else {
+								workerSuccessCount += len(mutations)
+								metricsCollector.AddSuccess(int64(len(mutations)))
+							}
+
+							// Reset mutations slice for next batch
+							mutations = []*spanner.Mutation{}
+						}
 					}
 				}
 
@@ -722,9 +724,11 @@ func main() {
 	// Define command line flags
 	var testType string
 	var startZone, endZone int
+	var batchNum int
 	flag.StringVar(&testType, "test", "setup", "Test type to run: setup, write-vertex, write-edge, all")
 	flag.IntVar(&startZone, "start-zone", ZONE_START, "Start zone ID for edge test")
 	flag.IntVar(&endZone, "end-zone", ZONE_START+ZONES_TOTAL, "End zone ID for edge test")
+	flag.IntVar(&batchNum, "batch-num", EDGES_PER_RELATION, "Number of edges per batch for edge write test")
 	flag.Parse()
 
 	ctx := context.Background()
@@ -801,7 +805,7 @@ func main() {
 
 	case "write-edge":
 		log.Printf("Running edge write test for zones [%d, %d)...", startZone, endZone)
-		spannerWriteEdgeTest(client, startZone, endZone)
+		spannerWriteEdgeTest(client, startZone, endZone, batchNum)
 
 	case "truncate":
 		log.Println("Running truncate test...")
@@ -819,7 +823,7 @@ func main() {
 		spannerWriteVertexTest(client)
 
 		// Test edge write performance
-		spannerWriteEdgeTest(client, ZONE_START, ZONE_START+ZONES_TOTAL)
+		spannerWriteEdgeTest(client, ZONE_START, ZONE_START+ZONES_TOTAL, batchNum)
 
 	default:
 		log.Printf("Unknown test type: %s", testType)
