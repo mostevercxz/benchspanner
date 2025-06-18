@@ -433,6 +433,12 @@ func spannerWriteVertexTest(client *spanner.Client, preGenerate bool) {
 	}
 
 	log.Printf("Starting %d write workers...", VUS)
+	maxDelay := 100 * time.Microsecond
+	co := spanner.CommitOptions{MaxCommitDelay: &maxDelay}
+	applyOpts := []spanner.ApplyOption{
+		// spanner.ApplyAtLeastOnce(),     // 1-RPC fast path
+		spanner.ApplyCommitOptions(co), // commit delay
+	}
 	countdownOrExit("开始写入顶点", 5)
 
 	for worker := 0; worker < VUS; worker++ {
@@ -494,7 +500,7 @@ func spannerWriteVertexTest(client *spanner.Client, preGenerate bool) {
 
 				// Execute insert
 				insertStart := time.Now()
-				_, err := client.Apply(context.Background(), []*spanner.Mutation{mutation})
+				_, err := client.Apply(context.Background(), []*spanner.Mutation{mutation}, applyOpts...)
 				insertDuration := time.Since(insertStart)
 
 				// Record metrics
