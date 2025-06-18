@@ -710,6 +710,22 @@ func spannerReadRelationTest(ctx context.Context, dbPath string) {
 
 			ctx := context.Background()
 
+			const baseSQL = `
+			GRAPH %s
+			MATCH (a:User {uid:@uid})-[e:Rel1|Rel4|Rel5]->(b:User)
+			WHERE e.attr101 > @a101 AND e.attr102 > @a102 AND e.attr103 > @a103
+			RETURN b.uid
+			LIMIT 300`
+
+			stmtTpl := spanner.Statement{
+				SQL: fmt.Sprintf(baseSQL, graphName), // stable text!
+				Params: map[string]interface{}{ // literals become params
+					"a101": int64(1000),
+					"a102": int64(2000),
+					"a103": int64(4000),
+				},
+			}
+
 			for iter := 0; iter < iterPerVU; iter++ {
 				idx := vuIndex*iterPerVU + iter
 				if idx >= totalVertices {
@@ -722,14 +738,8 @@ func spannerReadRelationTest(ctx context.Context, dbPath string) {
 				zoneID := ZONE_START + zoneOffset
 				uid := (int64(zoneID) << 40) | int64(idInZone)
 
-				stmt := spanner.Statement{
-					SQL: fmt.Sprintf(`
-					GRAPH %s
-					MATCH (a:User {uid: %d})-[e:Rel1|Rel4|Rel5]->(b:User)
-					WHERE e.attr101 > 1000 AND e.attr102 > 2000 AND e.attr103 > 4000
-					RETURN b.uid
-					LIMIT 300`, graphName, uid),
-				}
+				stmt := stmtTpl          // shallow copy
+				stmt.Params["uid"] = uid // just mutate the param
 
 				queryStart := time.Now()
 				// Create a new single-use read-only transaction for each query
