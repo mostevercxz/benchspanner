@@ -911,7 +911,7 @@ func spannerReadRelationTest(ctx context.Context, dbPath string) {
 						success = false
 						break
 					}
-					printSpannerRow(row)
+					// printSpannerRow(row)
 					rowCnt++
 				}
 				iterRows.Stop()
