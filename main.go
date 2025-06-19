@@ -42,6 +42,7 @@ var (
 	STR_ATTR_CNT          = 10                             // 字符串属性数量
 	INT_ATTR_CNT          = 90                             // 整数属性数量
 	PreGenerateVertexData = true                           // 是否预生成所有顶点数据
+	BATCH_NUM             = 1                              // 批量写入大小
 	instanceID            = "graph-demo"
 	GRAPH_NAME            = "graph0618"
 )
@@ -861,6 +862,132 @@ func spannerReadRelationTest(ctx context.Context, dbPath string) {
 	log.Printf("  Latency metrics: %s", combinedMetrics.String())
 }
 
+// spannerWriteBatchVertexTest performs vertex write testing with multiple goroutines using batch inserts
+func spannerWriteBatchVertexTest(client *spanner.Client, batchNum int) {
+	log.Printf("Starting Spanner batch vertex write test with batch size %d...", batchNum)
+
+	var wg sync.WaitGroup
+	startTime := time.Now()
+
+	// Initialize metrics
+	metricsCollector := metrics.NewConcurrentMetrics(VUS)
+
+	totalVertices := ZONES_TOTAL * RECORDS_PER_ZONE
+	verticesPerWorker := int(math.Ceil(float64(totalVertices) / float64(VUS)))
+
+	log.Printf("Workers will generate vertices on-the-fly. Total: %d vertices, %d workers, batch size: %d...", totalVertices, VUS, batchNum)
+
+	log.Printf("Starting %d write workers...", VUS)
+	countdownOrExit("开始批量写入顶点", 5)
+
+	for worker := 0; worker < VUS; worker++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+
+			// Calculate data range for this worker
+			startIdx := workerID * verticesPerWorker
+			endIdx := (workerID + 1) * verticesPerWorker
+			if endIdx > totalVertices {
+				endIdx = totalVertices
+			}
+
+			log.Printf("Worker %d started, processing vertices %d to %d", workerID, startIdx, endIdx-1)
+
+			workerSuccessCount := 0
+			workerErrorCount := 0
+
+			// Initialize random generator for this worker
+			rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(workerID)))
+			letters := []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+
+			// Batch mutations
+			var mutations []*spanner.Mutation
+
+			// Process vertices assigned to this worker
+			for i := startIdx; i < endIdx; i++ {
+				// Generate vertex on-the-fly
+				zoneOffset := i / RECORDS_PER_ZONE
+				idInZone := i%RECORDS_PER_ZONE + 1
+				zoneID := ZONE_START + zoneOffset
+				uid := (int64(zoneID) << 40) | int64(idInZone)
+
+				// Generate string attributes
+				strAttrs := make([]string, STR_ATTR_CNT)
+				for j := 0; j < STR_ATTR_CNT; j++ {
+					strAttrs[j] = randFixedString(rng, letters, 20)
+				}
+
+				// Generate integer attributes
+				intAttrs := make([]int64, INT_ATTR_CNT)
+				for j := 0; j < INT_ATTR_CNT; j++ {
+					intAttrs[j] = rng.Int63n(10000)
+				}
+
+				vertex := &VertexData{
+					UID:      uid,
+					StrAttrs: strAttrs,
+					IntAttrs: intAttrs,
+				}
+
+				// Build mutation for this vertex
+				mutation := buildVertexMutation(vertex)
+				mutations = append(mutations, mutation)
+
+				// Execute batch when reaching batchNum or at the end
+				if len(mutations) >= batchNum || i == endIdx-1 {
+					insertStart := time.Now()
+					_, err := client.Apply(context.Background(), mutations)
+					insertDuration := time.Since(insertStart)
+
+					// Record metrics for the batch
+					metricsCollector.AddDuration(workerID, insertDuration)
+
+					if err != nil {
+						log.Printf("Worker %d batch insert failed, batch size %d: %s", workerID, len(mutations), err.Error())
+						workerErrorCount += len(mutations)
+						metricsCollector.AddError(int64(len(mutations)))
+					} else {
+						workerSuccessCount += len(mutations)
+						metricsCollector.AddSuccess(int64(len(mutations)))
+					}
+
+					// Reset mutations slice for next batch
+					mutations = []*spanner.Mutation{}
+				}
+
+				// Log progress every 100 inserts
+				if (i-startIdx+1)%100 == 0 {
+					log.Printf("Worker %d processed %d vertices, success: %d, errors: %d",
+						workerID, i-startIdx+1, workerSuccessCount, workerErrorCount)
+				}
+			}
+
+			log.Printf("Worker %d completed: %d success, %d errors",
+				workerID, workerSuccessCount, workerErrorCount)
+		}(worker)
+	}
+
+	// Wait for all workers to complete
+	wg.Wait()
+	totalDuration := time.Since(startTime)
+
+	// Get combined metrics
+	combinedMetrics := metricsCollector.CombinedStats()
+	totalSuccess := metricsCollector.GetSuccessCount()
+	totalErrors := metricsCollector.GetErrorCount()
+
+	log.Println("Batch vertex write test completed:")
+	log.Printf("  Total duration: %v", totalDuration)
+	log.Printf("  Total vertices: %d", totalVertices)
+	log.Printf("  Batch size: %d", batchNum)
+	log.Printf("  Successful inserts: %d", totalSuccess)
+	log.Printf("  Failed inserts: %d", totalErrors)
+	log.Printf("  Success rate: %.2f%%", float64(totalSuccess)*100/float64(totalVertices))
+	log.Printf("  Throughput: %.2f vertices/sec", float64(totalSuccess)/totalDuration.Seconds())
+	log.Printf("  Latency metrics: %s", combinedMetrics.String())
+}
+
 // initFromEnv initializes configuration from environment variables
 func initFromEnv() {
 	// Initialize VUS from environment variable
@@ -924,8 +1051,15 @@ func initFromEnv() {
 		instanceID = instID
 	}
 
-	log.Printf("Configuration: VUS=%d, ZONE_START=%d, ZONES_TOTAL=%d, RECORDS_PER_ZONE=%d, EDGES_PER_RELATION=%d, TOTAL_VERTICES=%d, PreGenerateVertexData=%v",
-		VUS, ZONE_START, ZONES_TOTAL, RECORDS_PER_ZONE, EDGES_PER_RELATION, TOTAL_VERTICES, PreGenerateVertexData)
+	// Initialize BATCH_NUM from environment variable
+	if batchNumStr := os.Getenv("BATCH_NUM"); batchNumStr != "" {
+		if parsedBatchNum, err := strconv.Atoi(batchNumStr); err == nil && parsedBatchNum > 0 {
+			BATCH_NUM = parsedBatchNum
+		}
+	}
+
+	log.Printf("Configuration: VUS=%d, ZONE_START=%d, ZONES_TOTAL=%d, RECORDS_PER_ZONE=%d, EDGES_PER_RELATION=%d, TOTAL_VERTICES=%d, PreGenerateVertexData=%v, BATCH_NUM=%d",
+		VUS, ZONE_START, ZONES_TOTAL, RECORDS_PER_ZONE, EDGES_PER_RELATION, TOTAL_VERTICES, PreGenerateVertexData, BATCH_NUM)
 }
 
 // setupLogging configures logging to output to both terminal and file
@@ -1111,7 +1245,13 @@ func main() {
 
 	case "write-vertex":
 		log.Println("Running vertex write test...")
-		spannerWriteVertexTest(client, PreGenerateVertexData)
+		if BATCH_NUM > 1 {
+			log.Printf("Using batch mode with batch size %d", BATCH_NUM)
+			spannerWriteBatchVertexTest(client, BATCH_NUM)
+		} else {
+			log.Println("Using single insert mode")
+			spannerWriteVertexTest(client, PreGenerateVertexData)
+		}
 
 	case "write-edge":
 		log.Printf("Running edge write test for zones [%d, %d)...", startZone, endZone)
