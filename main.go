@@ -902,7 +902,7 @@ func spannerReadRelationTest(ctx context.Context, dbPath string) {
 				rowCnt := 0
 				success := true
 				for {
-					row, err := iterRows.Next()
+					_, err := iterRows.Next()
 					if err == iterator.Done {
 						break
 					}
