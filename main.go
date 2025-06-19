@@ -928,7 +928,7 @@ func spannerReadRelationTest(ctx context.Context, dbPath string) {
 				}
 
 				// Log progress every 100 queries
-				if iter%10 == 0 {
+				if iter%500 == 0 {
 					log.Printf("VU %d, iter %d, uid %d, query time: %v, rows: %d", vuIndex, iter, uid, queryDuration, rowCnt)
 				}
 			}
