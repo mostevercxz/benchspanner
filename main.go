@@ -26,9 +26,7 @@ import (
 )
 
 const (
-	projectID  = "superb-receiver-463215-f7"
-	databaseID = "mtbench"
-	graphName  = "graph0618"
+	graphName = "graph0618"
 )
 
 // 基准测试配置
@@ -46,6 +44,8 @@ var (
 	instanceID            = "graph-demo"
 	GRAPH_NAME            = "graph0618"
 	credentialsFile       = "superb-receiver-463215-f7-3b974ed0b146.json" // GCP credentials file path
+	projectID             = "superb-receiver-463215-f7"
+	databaseID            = "mtbench"
 )
 
 // VertexData represents a vertex to be inserted
@@ -1153,6 +1153,16 @@ func initFromEnv() {
 	// Initialize credentialsFile from environment variable
 	if credFile := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS_FILE"); credFile != "" {
 		credentialsFile = credFile
+	}
+
+	// Initialize projectID from environment variable
+	if projectIDStr := os.Getenv("PROJECT_ID"); projectIDStr != "" {
+		projectID = projectIDStr
+	}
+
+	// Initialize databaseID from environment variable
+	if dbID := os.Getenv("DATABASE_ID"); dbID != "" {
+		databaseID = dbID
 	}
 
 	log.Printf("Configuration: VUS=%d, ZONE_START=%d, ZONES_TOTAL=%d, RECORDS_PER_ZONE=%d, EDGES_PER_RELATION=%d, TOTAL_VERTICES=%d, PreGenerateVertexData=%v, BATCH_NUM=%d, credentialsFile=%s",
