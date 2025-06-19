@@ -43,6 +43,7 @@ var (
 	INT_ATTR_CNT          = 90                             // 整数属性数量
 	PreGenerateVertexData = true                           // 是否预生成所有顶点数据
 	instanceID            = "graph-demo"
+	GRAPH_NAME            = "graph0618"
 )
 
 // VertexData represents a vertex to be inserted
@@ -77,7 +78,7 @@ func setupGraphSpanner(ctx context.Context) error {
 	var ddl []string
 
 	// 1. Clean slate
-	ddl = append(ddl, fmt.Sprintf("DROP PROPERTY GRAPH IF EXISTS %s", graphName))
+	ddl = append(ddl, fmt.Sprintf("DROP PROPERTY GRAPH IF EXISTS %s", GRAPH_NAME))
 	edgeLabels := []string{"Rel1", "Rel2", "Rel3", "Rel4", "Rel5"}
 	for _, label := range edgeLabels {
 		ddl = append(ddl, fmt.Sprintf("DROP TABLE IF EXISTS %s", label))
@@ -254,7 +255,7 @@ NODE TABLES (
     LABEL User PROPERTIES (%s)
 )
 EDGE TABLES (%s
-)`, graphName, strings.Join(userProps, ", "), strings.Join(edgeDefs, ","))
+)`, GRAPH_NAME, strings.Join(userProps, ", "), strings.Join(edgeDefs, ","))
 
 	ddl = append(ddl, graphDDL)
 
@@ -293,7 +294,7 @@ EDGE TABLES (%s
 		return err
 	}
 
-	log.Printf("Graph %q created successfully in %s", graphName, dbPath)
+	log.Printf("Graph %q created successfully in %s", GRAPH_NAME, dbPath)
 	return nil
 }
 
@@ -776,7 +777,7 @@ func spannerReadRelationTest(ctx context.Context, dbPath string) {
 			LIMIT 300`
 
 			stmtTpl := spanner.Statement{
-				SQL: fmt.Sprintf(baseSQL, graphName), // stable text!
+				SQL: fmt.Sprintf(baseSQL, GRAPH_NAME), // stable text!
 				Params: map[string]interface{}{ // literals become params
 					"a101": int64(1000),
 					"a102": int64(2000),
@@ -896,6 +897,14 @@ func initFromEnv() {
 			EDGES_PER_RELATION = parsedEdgesPerRelation
 		}
 	}
+
+	// Initialize GRAPH_NAME from environment variable with default value "g0618"
+	if graphNameStr := os.Getenv("GRAPH_NAME"); graphNameStr != "" {
+		GRAPH_NAME = graphNameStr
+	} else {
+		GRAPH_NAME = "g0618"
+	}
+	log.Printf("GRAPH_NAME set to: %s", GRAPH_NAME)
 
 	// Initialize PreGenerateVertexData from environment variable
 	if preGenStr := os.Getenv("PRE_GENERATE_VERTEX_DATA"); preGenStr != "" {
