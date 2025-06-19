@@ -771,7 +771,7 @@ func spannerWriteEdgeTest(client *spanner.Client, startZoneID, endZoneID int, ba
 				}
 
 				// Log progress every 10 players
-				if (playerIndex-workerStartIndex+1)%10 == 0 {
+				if (playerIndex-workerStartIndex+1)%100 == 0 {
 					log.Printf("Worker %d processed player %d (UID: %d), success: %d, errors: %d",
 						workerID, playerIndex, playerUID, workerSuccessCount, workerErrorCount)
 				}
