@@ -836,7 +836,7 @@ func spannerReadRelationTest(ctx context.Context, dbPath string) {
 	// Metrics
 	metricsCollector := metrics.NewConcurrentMetrics(VUS)
 
-	log.Printf("Starting %d read workers…", VUS)
+	log.Printf("Starting %d read workers…,dbpath=%s", VUS, dbPath)
 	countdownOrExit("开始读取关系", 5)
 
 	for vu := 0; vu < VUS; vu++ {
