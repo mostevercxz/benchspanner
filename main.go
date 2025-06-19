@@ -54,8 +54,8 @@ type VertexData struct {
 	IntAttrs []int64
 }
 
-// setupGraphSpanner creates all tables, indexes, TTL policies, and the property graph.
-func setupGraphSpanner(ctx context.Context) error {
+// setupTableWithoutIndex creates all tables, TTL policies, and the property graph but excludes indexes.
+func setupTableWithoutIndex(ctx context.Context) error {
 	admin, err := database.NewDatabaseAdminClient(ctx, option.WithCredentialsFile(`superb-receiver-463215-f7-3b974ed0b146.json`))
 	if err != nil {
 		if st, ok := status.FromError(err); ok {
@@ -85,6 +85,9 @@ func setupGraphSpanner(ctx context.Context) error {
 		ddl = append(ddl, fmt.Sprintf("DROP TABLE IF EXISTS %s", label))
 	}
 	ddl = append(ddl, "DROP INDEX IF EXISTS user_attr11_attr12_attr13_idx")
+	for _, label := range edgeLabels {
+		ddl = append(ddl, fmt.Sprintf("DROP INDEX IF EXISTS %s_uid_attr_covering_idx", strings.ToLower(label)))
+	}
 	ddl = append(ddl, "DROP TABLE IF EXISTS Users")
 
 	// 2. Vertex table
@@ -194,14 +197,13 @@ CREATE TABLE Users (
   expire_time  TIMESTAMP OPTIONS (allow_commit_timestamp=true)
 ) PRIMARY KEY (uid)`)
 
+	// Add TTL policy for Users table
 	ddl = append(ddl,
-		`CREATE INDEX user_attr11_attr12_attr13_idx
-		   ON Users(attr11, attr12, attr13)`,
 		`ALTER TABLE Users
 		   ADD ROW DELETION POLICY (OLDER_THAN(expire_time, INTERVAL 8 DAY))`,
 	)
 
-	// 3. Edge tables + indexes + TTL (MODIFIED)
+	// 3. Edge tables + TTL (without indexes)
 	for _, label := range edgeLabels {
 		// FIXED: Renamed src_uid to uid to match parent table's PK for interleaving
 		ddl = append(ddl, fmt.Sprintf(`
@@ -222,19 +224,13 @@ CREATE TABLE %s (
 ) PRIMARY KEY (uid, dst_uid),
   INTERLEAVE IN PARENT Users ON DELETE CASCADE`, label))
 
-		// FIXED: Index now references the renamed 'uid' column
-		ddl = append(ddl, fmt.Sprintf(
-			`CREATE INDEX %s_uid_attr_covering_idx
-			   ON %s(uid, attr101, attr102, attr103)`,
-			strings.ToLower(label), label))
-
 		ddl = append(ddl, fmt.Sprintf(
 			`ALTER TABLE %s
 			   ADD ROW DELETION POLICY (OLDER_THAN(expire_time, INTERVAL 8 DAY))`,
 			label))
 	}
 
-	// 4. Property graph definition (MODIFIED)
+	// 4. Property graph definition
 	var edgeDefs []string
 	for _, l := range edgeLabels {
 		// FIXED: SOURCE KEY now correctly references 'uid'
@@ -261,6 +257,7 @@ EDGE TABLES (%s
 	ddl = append(ddl, graphDDL)
 
 	// print all the ddl to the terminal
+	log.Println("Tables and Property Graph DDL:")
 	log.Println(strings.Join(ddl, "\n\n"))
 
 	time.Sleep(100 * time.Second)
@@ -295,7 +292,101 @@ EDGE TABLES (%s
 		return err
 	}
 
-	log.Printf("Graph %q created successfully in %s", GRAPH_NAME, dbPath)
+	log.Printf("Tables and graph %q created successfully in %s", GRAPH_NAME, dbPath)
+	return nil
+}
+
+// setupAllTableIndexes creates all indexes for the tables.
+func setupAllTableIndexes(ctx context.Context) error {
+	admin, err := database.NewDatabaseAdminClient(ctx, option.WithCredentialsFile(`superb-receiver-463215-f7-3b974ed0b146.json`))
+	if err != nil {
+		if st, ok := status.FromError(err); ok {
+			log.Printf("NewDatabaseAdminClient failed - Code: %v (%d), Message: %s",
+				st.Code(), int(st.Code()), st.Message())
+			for _, detail := range st.Details() {
+				log.Printf("Error Detail: %+v", detail)
+			}
+		} else {
+			log.Printf("NewDatabaseAdminClient failed - Error: %v", err)
+		}
+		return err
+	}
+	defer admin.Close()
+
+	dbPath := fmt.Sprintf(
+		"projects/%s/instances/%s/databases/%s",
+		projectID, instanceID, databaseID,
+	)
+
+	var ddl []string
+	edgeLabels := []string{"Rel1", "Rel2", "Rel3", "Rel4", "Rel5"}
+
+	// Create index for Users table
+	ddl = append(ddl,
+		`CREATE INDEX user_attr11_attr12_attr13_idx
+		   ON Users(attr11, attr12, attr13)`,
+	)
+
+	// Create indexes for edge tables
+	for _, label := range edgeLabels {
+		ddl = append(ddl, fmt.Sprintf(
+			`CREATE INDEX %s_uid_attr_covering_idx
+			   ON %s(uid, attr101, attr102, attr103)`,
+			strings.ToLower(label), label))
+	}
+
+	// print all the ddl to the terminal
+	log.Println("Index DDL:")
+	log.Println(strings.Join(ddl, "\n\n"))
+
+	time.Sleep(100 * time.Second)
+
+	// Push DDL to Spanner
+	op, err := admin.UpdateDatabaseDdl(ctx, &databasepb.UpdateDatabaseDdlRequest{
+		Database:   dbPath,
+		Statements: ddl,
+	})
+	if err != nil {
+		if st, ok := status.FromError(err); ok {
+			log.Printf("UpdateDatabaseDdl failed - Code: %v (%d), Message: %s",
+				st.Code(), int(st.Code()), st.Message())
+			for _, detail := range st.Details() {
+				log.Printf("Error Detail: %+v", detail)
+			}
+		} else {
+			log.Printf("UpdateDatabaseDdl failed - Error: %v", err)
+		}
+		return err
+	}
+	if err := op.Wait(ctx); err != nil {
+		if st, ok := status.FromError(err); ok {
+			log.Printf("DDL operation wait failed - Code: %v (%d), Message: %s",
+				st.Code(), int(st.Code()), st.Message())
+			for _, detail := range st.Details() {
+				log.Printf("Error Detail: %+v", detail)
+			}
+		} else {
+			log.Printf("DDL operation wait failed - Error: %v", err)
+		}
+		return err
+	}
+
+	log.Printf("All indexes created successfully in %s", dbPath)
+	return nil
+}
+
+// setupGraphSpanner creates all tables, indexes, TTL policies, and the property graph.
+func setupGraphSpanner(ctx context.Context) error {
+	// First create tables without indexes
+	if err := setupTableWithoutIndex(ctx); err != nil {
+		return err
+	}
+
+	// Then create all indexes
+	if err := setupAllTableIndexes(ctx); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -1169,7 +1260,7 @@ func main() {
 	var testType string
 	var startZone, endZone int
 	var batchNum int
-	flag.StringVar(&testType, "test", "setup", "Test type to run: setup, write-vertex, write-edge, relation, all")
+	flag.StringVar(&testType, "test", "setup", "Test type to run: setup, setupindex, write-vertex, write-edge, relation, all")
 	flag.IntVar(&startZone, "start-zone", ZONE_START, "Start zone ID for edge test")
 	flag.IntVar(&endZone, "end-zone", ZONE_START+ZONES_TOTAL, "End zone ID for edge test")
 	flag.IntVar(&batchNum, "batch-num", EDGES_PER_RELATION, "Number of edges per batch for edge write test")
@@ -1243,6 +1334,12 @@ func main() {
 			log.Fatalf("Failed to setup graph: %v", err)
 		}
 
+	case "setupindex":
+		log.Println("Running setup indexes test...")
+		if err := setupAllTableIndexes(ctx); err != nil {
+			log.Fatalf("Failed to setup indexes: %v", err)
+		}
+
 	case "write-vertex":
 		log.Println("Running vertex write test...")
 		if BATCH_NUM > 1 {
@@ -1284,7 +1381,7 @@ func main() {
 
 	default:
 		log.Printf("Unknown test type: %s", testType)
-		log.Println("Available test types: setup, write-vertex, write-edge, relation, all")
+		log.Println("Available test types: setup, setupindex, write-vertex, write-edge, relation, all")
 		os.Exit(1)
 	}
 
