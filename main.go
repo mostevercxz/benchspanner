@@ -45,6 +45,7 @@ var (
 	BATCH_NUM             = 1                              // 批量写入大小
 	instanceID            = "graph-demo"
 	GRAPH_NAME            = "graph0618"
+	credentialsFile       = "superb-receiver-463215-f7-3b974ed0b146.json" // GCP credentials file path
 )
 
 // VertexData represents a vertex to be inserted
@@ -56,7 +57,7 @@ type VertexData struct {
 
 // setupTableWithoutIndex creates all tables, TTL policies, and the property graph but excludes indexes.
 func setupTableWithoutIndex(ctx context.Context) error {
-	admin, err := database.NewDatabaseAdminClient(ctx, option.WithCredentialsFile(`superb-receiver-463215-f7-3b974ed0b146.json`))
+	admin, err := database.NewDatabaseAdminClient(ctx, option.WithCredentialsFile(credentialsFile))
 	if err != nil {
 		if st, ok := status.FromError(err); ok {
 			log.Printf("NewDatabaseAdminClient failed - Code: %v (%d), Message: %s",
@@ -298,7 +299,7 @@ EDGE TABLES (%s
 
 // setupAllTableIndexes creates all indexes for the tables.
 func setupAllTableIndexes(ctx context.Context) error {
-	admin, err := database.NewDatabaseAdminClient(ctx, option.WithCredentialsFile(`superb-receiver-463215-f7-3b974ed0b146.json`))
+	admin, err := database.NewDatabaseAdminClient(ctx, option.WithCredentialsFile(credentialsFile))
 	if err != nil {
 		if st, ok := status.FromError(err); ok {
 			log.Printf("NewDatabaseAdminClient failed - Code: %v (%d), Message: %s",
@@ -393,7 +394,7 @@ func setupGraphSpanner(ctx context.Context) error {
 func spannerTruncateAllData(ctx context.Context, dbPath string) error {
 	// 1. Create a Spanner data client (not an admin client)
 	client, err := spanner.NewClient(ctx, dbPath,
-		option.WithCredentialsFile(`superb-receiver-463215-f7-3b974ed0b146.json`))
+		option.WithCredentialsFile(credentialsFile))
 	if err != nil {
 		log.Printf("Failed to create Spanner client: %v", err)
 		return err
@@ -843,7 +844,7 @@ func spannerReadRelationTest(ctx context.Context, dbPath string) {
 		go func(vuIndex int) {
 			defer wg.Done()
 			log.Printf("VU %d started, will process %d vertices", vuIndex, iterPerVU)
-			client, err := spanner.NewClient(ctx, dbPath, option.WithCredentialsFile(`superb-receiver-463215-f7-3b974ed0b146.json`))
+			client, err := spanner.NewClient(ctx, dbPath, option.WithCredentialsFile(credentialsFile))
 			if err != nil {
 				log.Printf("Failed to create Spanner client: %v", err)
 				return
@@ -1149,8 +1150,13 @@ func initFromEnv() {
 		}
 	}
 
-	log.Printf("Configuration: VUS=%d, ZONE_START=%d, ZONES_TOTAL=%d, RECORDS_PER_ZONE=%d, EDGES_PER_RELATION=%d, TOTAL_VERTICES=%d, PreGenerateVertexData=%v, BATCH_NUM=%d",
-		VUS, ZONE_START, ZONES_TOTAL, RECORDS_PER_ZONE, EDGES_PER_RELATION, TOTAL_VERTICES, PreGenerateVertexData, BATCH_NUM)
+	// Initialize credentialsFile from environment variable
+	if credFile := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS_FILE"); credFile != "" {
+		credentialsFile = credFile
+	}
+
+	log.Printf("Configuration: VUS=%d, ZONE_START=%d, ZONES_TOTAL=%d, RECORDS_PER_ZONE=%d, EDGES_PER_RELATION=%d, TOTAL_VERTICES=%d, PreGenerateVertexData=%v, BATCH_NUM=%d, credentialsFile=%s",
+		VUS, ZONE_START, ZONES_TOTAL, RECORDS_PER_ZONE, EDGES_PER_RELATION, TOTAL_VERTICES, PreGenerateVertexData, BATCH_NUM, credentialsFile)
 }
 
 // setupLogging configures logging to output to both terminal and file
@@ -1274,7 +1280,7 @@ func main() {
 
 	// If you set GOOGLE_APPLICATION_CREDENTIALS, you can omit the option.
 	client, err := spanner.NewClient(ctx, dbPath,
-		option.WithCredentialsFile(`superb-receiver-463215-f7-3b974ed0b146.json`))
+		option.WithCredentialsFile(credentialsFile))
 	if err != nil {
 		if st, ok := status.FromError(err); ok {
 			log.Printf("spanner.NewClient failed - Code: %v (%d), Message: %s",
