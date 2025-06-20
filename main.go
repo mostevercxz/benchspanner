@@ -1288,8 +1288,16 @@ func main() {
 	//   projects/{PROJECT}/instances/{INSTANCE}/databases/{DATABASE}
 	dbPath := fmt.Sprintf("projects/%s/instances/%s/databases/%s", projectID, instanceID, databaseID)
 
+	cfg := spanner.ClientConfig{
+		SessionPoolConfig: spanner.SessionPoolConfig{
+			MinOpened: 1600,
+			MaxOpened: 3200,
+		},
+		NumChannels: 16,
+	}
+
 	// If you set GOOGLE_APPLICATION_CREDENTIALS, you can omit the option.
-	client, err := spanner.NewClient(ctx, dbPath,
+	client, err := spanner.NewClientWithConfig(ctx, dbPath, cfg,
 		option.WithCredentialsFile(credentialsFile))
 	if err != nil {
 		if st, ok := status.FromError(err); ok {
