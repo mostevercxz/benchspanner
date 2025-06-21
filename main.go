@@ -19,6 +19,7 @@ import (
 
 	"cloud.google.com/go/spanner"
 	database "cloud.google.com/go/spanner/admin/database/apiv1"
+	"github.com/dgryski/go-farm"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 	databasepb "google.golang.org/genproto/googleapis/spanner/admin/database/v1"
@@ -26,7 +27,8 @@ import (
 )
 
 const (
-	graphName = "graph0618"
+	graphName        = "graph0618"
+	shardBucketCount = 1024 // 改这里即可增减 shard 桶数
 )
 
 // 基准测试配置
@@ -47,6 +49,16 @@ var (
 	projectID             = "superb-receiver-463215-f7"
 	databaseID            = "mtbench"
 )
+
+// 与 DDL 中 %1024 一致；想改桶数仅改此处
+const ShardBucketCount int64 = 1024
+
+// calcShard 复刻 Spanner 端的  MOD(ABS(FARM_FINGERPRINT(uid::STRING)), N)
+func calcShard(uid int64) int64 {
+	// FarmHash 64 位，参数需 []byte
+	h := farm.Fingerprint64([]byte(strconv.FormatInt(uid, 10)))
+	return int64(h % uint64(ShardBucketCount))
+}
 
 // VertexData represents a vertex to be inserted
 type VertexData struct {
@@ -77,35 +89,32 @@ func setupTableWithoutIndex(ctx context.Context) error {
 		projectID, instanceID, databaseID,
 	)
 
+	edgeLabels := []string{"Rel1", "Rel2", "Rel3", "Rel4", "Rel5"}
 	var ddl []string
 
-	// 1. Clean slate
+	// ---------- 1  清理旧对象 ----------
 	ddl = append(ddl, fmt.Sprintf("DROP PROPERTY GRAPH IF EXISTS %s", GRAPH_NAME))
-	edgeLabels := []string{"Rel1", "Rel2", "Rel3", "Rel4", "Rel5"}
-	for _, label := range edgeLabels {
-		ddl = append(ddl, fmt.Sprintf("DROP TABLE IF EXISTS %s", label))
+	for _, l := range edgeLabels {
+		ddl = append(ddl,
+			fmt.Sprintf("DROP TABLE IF EXISTS %s", l),
+			fmt.Sprintf("DROP INDEX IF EXISTS %s_shard_uid_attr_covering_idx", strings.ToLower(l)),
+		)
 	}
-	ddl = append(ddl, "DROP INDEX IF EXISTS user_attr11_attr12_attr13_idx")
-	for _, label := range edgeLabels {
-		ddl = append(ddl, fmt.Sprintf("DROP INDEX IF EXISTS %s_uid_attr_covering_idx", strings.ToLower(label)))
-	}
-	ddl = append(ddl, "DROP TABLE IF EXISTS Users")
+	ddl = append(ddl,
+		"DROP INDEX IF EXISTS user_shard_attr11_attr12_attr13_idx",
+		"DROP TABLE IF EXISTS Users",
+	)
 
-	// 2. Vertex table
-	ddl = append(ddl, `
+	// ---------- 2  Users（带 shard 生成列） ----------
+	usersDDL := fmt.Sprintf(`
 CREATE TABLE Users (
+  shard        INT64 NOT NULL AS (MOD(ABS(FARM_FINGERPRINT(CAST(uid AS STRING))), %d)) STORED,
   uid          INT64  NOT NULL,
-  attr1        STRING(20),
-  attr2        STRING(20),
-  attr3        STRING(20),
-  attr4        STRING(20),
-  attr5        STRING(20),
-  attr6        STRING(20),
-  attr7        STRING(20),
-  attr8        STRING(20),
-  attr9        STRING(20),
-  attr10       STRING(20),
-  attr11       INT64,
+  -- STRING attrs
+  attr1  STRING(20),  attr2  STRING(20),  attr3  STRING(20),  attr4  STRING(20),  attr5  STRING(20),
+  attr6  STRING(20),  attr7  STRING(20),  attr8  STRING(20),  attr9  STRING(20),  attr10 STRING(20),
+  -- INT64 attrs
+attr11       INT64,
   attr12       INT64,
   attr13       INT64,
   attr14       INT64,
@@ -196,104 +205,68 @@ CREATE TABLE Users (
   attr99       INT64,
   attr100      INT64,
   expire_time  TIMESTAMP OPTIONS (allow_commit_timestamp=true)
-) PRIMARY KEY (uid)`)
+) PRIMARY KEY (shard, uid)`, shardBucketCount)
+	ddl = append(ddl, usersDDL)
 
-	// Add TTL policy for Users table
-	ddl = append(ddl,
-		`ALTER TABLE Users
-		   ADD ROW DELETION POLICY (OLDER_THAN(expire_time, INTERVAL 8 DAY))`,
-	)
+	ddl = append(ddl, `ALTER TABLE Users
+		ADD ROW DELETION POLICY (OLDER_THAN(expire_time, INTERVAL 8 DAY))`)
 
-	// 3. Edge tables + TTL (without indexes)
-	for _, label := range edgeLabels {
-		// FIXED: Renamed src_uid to uid to match parent table's PK for interleaving
-		ddl = append(ddl, fmt.Sprintf(`
+	// ---------- 3  Edge 表 ----------
+	for _, l := range edgeLabels {
+		edgeDDL := fmt.Sprintf(`
 CREATE TABLE %s (
+  shard        INT64      NOT NULL,
   uid          INT64      NOT NULL,
   dst_uid      INT64      NOT NULL,
-  attr101      INT64,
-  attr102      INT64,
-  attr103      INT64,
-  attr104      INT64,
-  attr105      INT64,
-  attr106      INT64,
-  attr107      INT64,
-  attr108      INT64,
-  attr109      INT64,
-  attr110      INT64,
-  expire_time  TIMESTAMP OPTIONS (allow_commit_timestamp=true)
-) PRIMARY KEY (uid, dst_uid),
-  INTERLEAVE IN PARENT Users ON DELETE CASCADE`, label))
+  attr101      INT64, attr102 INT64, attr103 INT64, attr104 INT64, attr105 INT64,
+  attr106      INT64, attr107 INT64, attr108 INT64, attr109 INT64, attr110 INT64,
+  expire_time  TIMESTAMP  OPTIONS (allow_commit_timestamp=true)
+) PRIMARY KEY (shard, uid, dst_uid),
+  INTERLEAVE IN PARENT Users ON DELETE CASCADE`, l)
+		ddl = append(ddl, edgeDDL)
 
 		ddl = append(ddl, fmt.Sprintf(
 			`ALTER TABLE %s
-			   ADD ROW DELETION POLICY (OLDER_THAN(expire_time, INTERVAL 8 DAY))`,
-			label))
+			   ADD ROW DELETION POLICY (OLDER_THAN(expire_time, INTERVAL 8 DAY))`, l))
 	}
 
-	// 4. Property graph definition
+	// ---------- 4  Property Graph ----------
 	var edgeDefs []string
 	for _, l := range edgeLabels {
-		// FIXED: SOURCE KEY now correctly references 'uid'
 		edgeDefs = append(edgeDefs, fmt.Sprintf(`
   %s
-    SOURCE KEY (uid) REFERENCES Users(uid)
-    DESTINATION KEY (dst_uid) REFERENCES Users(uid)
-    LABEL %s PROPERTIES (attr101, attr102, attr103, attr104, attr105, attr106, attr107, attr108, attr109, attr110)`, l, l))
+    SOURCE KEY (shard, uid)            REFERENCES Users(shard, uid)
+    DESTINATION KEY (dst_uid)          REFERENCES Users(uid)
+    LABEL %s PROPERTIES (attr101, attr102, attr103, attr104, attr105,
+                         attr106, attr107, attr108, attr109, attr110)`, l, l))
 	}
 
-	userProps := []string{"uid"}
-	for i := 1; i <= 100; i++ {
-		userProps = append(userProps, fmt.Sprintf("attr%d", i))
-	}
-
-	graphDDL := fmt.Sprintf(`CREATE PROPERTY GRAPH %s
+	graphDDL := fmt.Sprintf(`
+CREATE PROPERTY GRAPH %s
 NODE TABLES (
-  Users KEY (uid)
+  Users KEY (shard, uid)
     LABEL User PROPERTIES (%s)
 )
 EDGE TABLES (%s
-)`, GRAPH_NAME, strings.Join(userProps, ", "), strings.Join(edgeDefs, ","))
-
+)`, GRAPH_NAME, buildUserProps(), strings.Join(edgeDefs, ","))
 	ddl = append(ddl, graphDDL)
 
-	// print all the ddl to the terminal
-	log.Println("Tables and Property Graph DDL:")
+	// ---------- 5  打印并执行 ----------
+	log.Println("=== TABLE & GRAPH DDL ===")
 	log.Println(strings.Join(ddl, "\n\n"))
 
-	time.Sleep(100 * time.Second)
-
-	// 5. Push DDL to Spanner
-	op, err := admin.UpdateDatabaseDdl(ctx, &databasepb.UpdateDatabaseDdlRequest{
-		Database:   dbPath,
-		Statements: ddl,
-	})
+	op, err := admin.UpdateDatabaseDdl(ctx,
+		&databasepb.UpdateDatabaseDdlRequest{
+			Database:   dbPath,
+			Statements: ddl,
+		})
 	if err != nil {
-		if st, ok := status.FromError(err); ok {
-			log.Printf("UpdateDatabaseDdl failed - Code: %v (%d), Message: %s",
-				st.Code(), int(st.Code()), st.Message())
-			for _, detail := range st.Details() {
-				log.Printf("Error Detail: %+v", detail)
-			}
-		} else {
-			log.Printf("UpdateDatabaseDdl failed - Error: %v", err)
-		}
-		return err
+		return fmt.Errorf("UpdateDatabaseDdl: %w", err)
 	}
 	if err := op.Wait(ctx); err != nil {
-		if st, ok := status.FromError(err); ok {
-			log.Printf("DDL operation wait failed - Code: %v (%d), Message: %s",
-				st.Code(), int(st.Code()), st.Message())
-			for _, detail := range st.Details() {
-				log.Printf("Error Detail: %+v", detail)
-			}
-		} else {
-			log.Printf("DDL operation wait failed - Error: %v", err)
-		}
-		return err
+		return fmt.Errorf("DDL wait: %w", err)
 	}
-
-	log.Printf("Tables and graph %q created successfully in %s", GRAPH_NAME, dbPath)
+	log.Printf("Tables & graph %q created in %s", GRAPH_NAME, dbPath)
 	return nil
 }
 
@@ -319,60 +292,36 @@ func setupAllTableIndexes(ctx context.Context) error {
 		projectID, instanceID, databaseID,
 	)
 
-	var ddl []string
 	edgeLabels := []string{"Rel1", "Rel2", "Rel3", "Rel4", "Rel5"}
+	var ddl []string
 
-	// Create index for Users table
-	ddl = append(ddl,
-		`CREATE INDEX user_attr11_attr12_attr13_idx
-		   ON Users(attr11, attr12, attr13)`,
-	)
+	// Users 索引
+	ddl = append(ddl, `
+CREATE INDEX user_shard_attr11_attr12_attr13_idx
+  ON Users(shard, attr11, attr12, attr13)`)
 
-	// Create indexes for edge tables
-	for _, label := range edgeLabels {
-		ddl = append(ddl, fmt.Sprintf(
-			`CREATE INDEX %s_uid_attr_covering_idx
-			   ON %s(uid, attr101, attr102, attr103)`,
-			strings.ToLower(label), label))
+	// Edge 覆盖索引
+	for _, l := range edgeLabels {
+		ddl = append(ddl, fmt.Sprintf(`
+CREATE INDEX %s_shard_uid_attr_covering_idx
+  ON %s(shard, uid, attr101, attr102, attr103)`, strings.ToLower(l), l))
 	}
 
-	// print all the ddl to the terminal
-	log.Println("Index DDL:")
+	log.Println("=== INDEX DDL ===")
 	log.Println(strings.Join(ddl, "\n\n"))
 
-	time.Sleep(100 * time.Second)
-
-	// Push DDL to Spanner
-	op, err := admin.UpdateDatabaseDdl(ctx, &databasepb.UpdateDatabaseDdlRequest{
-		Database:   dbPath,
-		Statements: ddl,
-	})
+	op, err := admin.UpdateDatabaseDdl(ctx,
+		&databasepb.UpdateDatabaseDdlRequest{
+			Database:   dbPath,
+			Statements: ddl,
+		})
 	if err != nil {
-		if st, ok := status.FromError(err); ok {
-			log.Printf("UpdateDatabaseDdl failed - Code: %v (%d), Message: %s",
-				st.Code(), int(st.Code()), st.Message())
-			for _, detail := range st.Details() {
-				log.Printf("Error Detail: %+v", detail)
-			}
-		} else {
-			log.Printf("UpdateDatabaseDdl failed - Error: %v", err)
-		}
-		return err
+		return fmt.Errorf("UpdateDatabaseDdl: %w", err)
 	}
 	if err := op.Wait(ctx); err != nil {
-		if st, ok := status.FromError(err); ok {
-			log.Printf("DDL operation wait failed - Code: %v (%d), Message: %s",
-				st.Code(), int(st.Code()), st.Message())
-			for _, detail := range st.Details() {
-				log.Printf("Error Detail: %+v", detail)
-			}
-		} else {
-			log.Printf("DDL operation wait failed - Error: %v", err)
-		}
-		return err
+		return fmt.Errorf("DDL wait: %w", err)
 	}
-
-	log.Printf("All indexes created successfully in %s", dbPath)
+	log.Printf("All indexes created in %s", dbPath)
 	return nil
 }
 
@@ -643,8 +592,8 @@ func spannerWriteVertexTest(client *spanner.Client, preGenerate bool) {
 // buildVertexMutation builds a Spanner mutation for inserting a vertex
 func buildVertexMutation(vertex *VertexData) *spanner.Mutation {
 	// Prepare columns and values for the Users table
-	columns := []string{"uid"}
-	values := []interface{}{vertex.UID}
+	columns := []string{"shard", "uid"}
+	values := []interface{}{calcShard(vertex.UID), vertex.UID}
 
 	// Add string attributes (attr1-attr10)
 	for i, strAttr := range vertex.StrAttrs {
@@ -805,8 +754,8 @@ func spannerWriteEdgeTest(client *spanner.Client, startZoneID, endZoneID int, ba
 // buildEdgeMutation builds a Spanner mutation for inserting an edge
 func buildEdgeMutation(relType string, sourceUID, targetUID int64, attrs []int64) *spanner.Mutation {
 	// Prepare columns and values for the edge table
-	columns := []string{"uid", "dst_uid"}
-	values := []interface{}{sourceUID, targetUID}
+	columns := []string{"shard", "uid", "dst_uid"}
+	values := []interface{}{calcShard(sourceUID), sourceUID, targetUID}
 
 	// Add edge attributes attr101-attr110
 	for i, attr := range attrs {
@@ -1410,4 +1359,13 @@ func main() {
 	}
 
 	log.Println("Benchmark completed")
+}
+
+// buildUserProps 返回 Users 所有属性列表（uid, attr1..attr100）
+func buildUserProps() string {
+	props := []string{"shard", "uid"}
+	for i := 1; i <= 100; i++ {
+		props = append(props, fmt.Sprintf("attr%d", i))
+	}
+	return strings.Join(props, ", ")
 }
