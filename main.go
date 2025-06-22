@@ -108,7 +108,7 @@ func setupTableWithoutIndex(ctx context.Context) error {
 	// ---------- 2  Users（带 shard 生成列） ----------
 	usersDDL := fmt.Sprintf(`
 CREATE TABLE Users (
-  shard        INT64 NOT NULL AS (MOD(ABS(FARM_FINGERPRINT(CAST(uid AS STRING))), %d)) STORED,
+  shard        INT64 NOT NULL,
   uid          INT64  NOT NULL,
   -- STRING attrs
   attr1  STRING(20),  attr2  STRING(20),  attr3  STRING(20),  attr4  STRING(20),  attr5  STRING(20),
@@ -205,7 +205,7 @@ attr11       INT64,
   attr99       INT64,
   attr100      INT64,
   expire_time  TIMESTAMP OPTIONS (allow_commit_timestamp=true)
-) PRIMARY KEY (shard, uid)`, shardBucketCount)
+) PRIMARY KEY (shard, uid)`)
 	ddl = append(ddl, usersDDL)
 
 	ddl = append(ddl, `ALTER TABLE Users
@@ -800,6 +800,8 @@ func spannerReadRelationTest(ctx context.Context, dbPath string) {
 			}
 			defer client.Close()
 
+			rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(vuIndex)))
+
 			ctx := context.Background()
 
 			const baseSQL = `
@@ -821,9 +823,9 @@ func spannerReadRelationTest(ctx context.Context, dbPath string) {
 			stmtTpl := spanner.Statement{
 				SQL: fmt.Sprintf(baseSQL, GRAPH_NAME), // stable text!
 				Params: map[string]interface{}{ // literals become params
-					"a101": int64(1000),
-					"a102": int64(2000),
-					"a103": int64(4000),
+					"a101": rng.Intn(10000),
+					"a102": rng.Intn(10000),
+					"a103": rng.Intn(10000),
 				},
 			}
 
