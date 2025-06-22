@@ -808,7 +808,17 @@ func spannerReadRelationTest(ctx context.Context, dbPath string) {
 			GRAPH %s
 			MATCH (a:User {uid:@uid})-[e:Rel1|Rel4|Rel5]->(b:User)
 			WHERE e.attr101 > @a101 AND e.attr102 > @a102 AND e.attr103 > @a103
-			RETURN b.uid, b.attr1, b.attr2, b.attr3, b.attr4, b.attr5, b.attr6, b.attr7, b.attr8, b.attr9, b.attr10,
+			RETURN a.uid, a.attr1, a.attr2, a.attr3, a.attr4, a.attr5, a.attr6, a.attr7, a.attr8, a.attr9, a.attr10,
+			       a.attr11, a.attr12, a.attr13, a.attr14, a.attr15, a.attr16, a.attr17, a.attr18, a.attr19, a.attr20,
+			       a.attr21, a.attr22, a.attr23, a.attr24, a.attr25, a.attr26, a.attr27, a.attr28, a.attr29, a.attr30,
+			       a.attr31, a.attr32, a.attr33, a.attr34, a.attr35, a.attr36, a.attr37, a.attr38, a.attr39, a.attr40,
+			       a.attr41, a.attr42, a.attr43, a.attr44, a.attr45, a.attr46, a.attr47, a.attr48, a.attr49, a.attr50,
+			       a.attr51, a.attr52, a.attr53, a.attr54, a.attr55, a.attr56, a.attr57, a.attr58, a.attr59, a.attr60,
+			       a.attr61, a.attr62, a.attr63, a.attr64, a.attr65, a.attr66, a.attr67, a.attr68, a.attr69, a.attr70,
+			       a.attr71, a.attr72, a.attr73, a.attr74, a.attr75, a.attr76, a.attr77, a.attr78, a.attr79, a.attr80,
+			       a.attr81, a.attr82, a.attr83, a.attr84, a.attr85, a.attr86, a.attr87, a.attr88, a.attr89, a.attr90,
+			       a.attr91, a.attr92, a.attr93, a.attr94, a.attr95, a.attr96, a.attr97, a.attr98, a.attr99, a.attr100,
+			       b.uid, b.attr1, b.attr2, b.attr3, b.attr4, b.attr5, b.attr6, b.attr7, b.attr8, b.attr9, b.attr10,
 			       b.attr11, b.attr12, b.attr13, b.attr14, b.attr15, b.attr16, b.attr17, b.attr18, b.attr19, b.attr20,
 			       b.attr21, b.attr22, b.attr23, b.attr24, b.attr25, b.attr26, b.attr27, b.attr28, b.attr29, b.attr30,
 			       b.attr31, b.attr32, b.attr33, b.attr34, b.attr35, b.attr36, b.attr37, b.attr38, b.attr39, b.attr40,
