@@ -859,16 +859,26 @@ func spannerReadRelationTest(ctx context.Context, dbPath string) {
 			GRAPH %s
 			MATCH (a:User {uid:@uid})-[e:Rel1|Rel4|Rel5]->(b:User)
 			WHERE e.attr101 > @a101 AND e.attr102 > @a102 AND e.attr103 > @a103
-			RETURN b.uid, b.attr1, b.attr2, b.attr3, b.attr4, b.attr5, b.attr6, b.attr7, b.attr8, b.attr9, b.attr10,
-			       b.attr11, b.attr12, b.attr13, b.attr14, b.attr15, b.attr16, b.attr17, b.attr18, b.attr19, b.attr20,
-			       b.attr21, b.attr22, b.attr23, b.attr24, b.attr25, b.attr26, b.attr27, b.attr28, b.attr29, b.attr30,
-			       b.attr31, b.attr32, b.attr33, b.attr34, b.attr35, b.attr36, b.attr37, b.attr38, b.attr39, b.attr40,
-			       b.attr41, b.attr42, b.attr43, b.attr44, b.attr45, b.attr46, b.attr47, b.attr48, b.attr49, b.attr50,
-			       b.attr51, b.attr52, b.attr53, b.attr54, b.attr55, b.attr56, b.attr57, b.attr58, b.attr59, b.attr60,
-			       b.attr61, b.attr62, b.attr63, b.attr64, b.attr65, b.attr66, b.attr67, b.attr68, b.attr69, b.attr70,
-			       b.attr71, b.attr72, b.attr73, b.attr74, b.attr75, b.attr76, b.attr77, b.attr78, b.attr79, b.attr80,
-			       b.attr81, b.attr82, b.attr83, b.attr84, b.attr85, b.attr86, b.attr87, b.attr88, b.attr89, b.attr90,
-			       b.attr91, b.attr92, b.attr93, b.attr94, b.attr95, b.attr96, b.attr97, b.attr98, b.attr99, b.attr100
+			RETURN a.uid AS a_uid, a.attr1 AS a_attr1, a.attr2 AS a_attr2, a.attr3 AS a_attr3, a.attr4 AS a_attr4, a.attr5 AS a_attr5, a.attr6 AS a_attr6, a.attr7 AS a_attr7, a.attr8 AS a_attr8, a.attr9 AS a_attr9, a.attr10 AS a_attr10,
+			       a.attr11 AS a_attr11, a.attr12 AS a_attr12, a.attr13 AS a_attr13, a.attr14 AS a_attr14, a.attr15 AS a_attr15, a.attr16 AS a_attr16, a.attr17 AS a_attr17, a.attr18 AS a_attr18, a.attr19 AS a_attr19, a.attr20 AS a_attr20,
+			       a.attr21 AS a_attr21, a.attr22 AS a_attr22, a.attr23 AS a_attr23, a.attr24 AS a_attr24, a.attr25 AS a_attr25, a.attr26 AS a_attr26, a.attr27 AS a_attr27, a.attr28 AS a_attr28, a.attr29 AS a_attr29, a.attr30 AS a_attr30,
+			       a.attr31 AS a_attr31, a.attr32 AS a_attr32, a.attr33 AS a_attr33, a.attr34 AS a_attr34, a.attr35 AS a_attr35, a.attr36 AS a_attr36, a.attr37 AS a_attr37, a.attr38 AS a_attr38, a.attr39 AS a_attr39, a.attr40 AS a_attr40,
+			       a.attr41 AS a_attr41, a.attr42 AS a_attr42, a.attr43 AS a_attr43, a.attr44 AS a_attr44, a.attr45 AS a_attr45, a.attr46 AS a_attr46, a.attr47 AS a_attr47, a.attr48 AS a_attr48, a.attr49 AS a_attr49, a.attr50 AS a_attr50,
+			       a.attr51 AS a_attr51, a.attr52 AS a_attr52, a.attr53 AS a_attr53, a.attr54 AS a_attr54, a.attr55 AS a_attr55, a.attr56 AS a_attr56, a.attr57 AS a_attr57, a.attr58 AS a_attr58, a.attr59 AS a_attr59, a.attr60 AS a_attr60,
+			       a.attr61 AS a_attr61, a.attr62 AS a_attr62, a.attr63 AS a_attr63, a.attr64 AS a_attr64, a.attr65 AS a_attr65, a.attr66 AS a_attr66, a.attr67 AS a_attr67, a.attr68 AS a_attr68, a.attr69 AS a_attr69, a.attr70 AS a_attr70,
+			       a.attr71 AS a_attr71, a.attr72 AS a_attr72, a.attr73 AS a_attr73, a.attr74 AS a_attr74, a.attr75 AS a_attr75, a.attr76 AS a_attr76, a.attr77 AS a_attr77, a.attr78 AS a_attr78, a.attr79 AS a_attr79, a.attr80 AS a_attr80,
+			       a.attr81 AS a_attr81, a.attr82 AS a_attr82, a.attr83 AS a_attr83, a.attr84 AS a_attr84, a.attr85 AS a_attr85, a.attr86 AS a_attr86, a.attr87 AS a_attr87, a.attr88 AS a_attr88, a.attr89 AS a_attr89, a.attr90 AS a_attr90,
+			       a.attr91 AS a_attr91, a.attr92 AS a_attr92, a.attr93 AS a_attr93, a.attr94 AS a_attr94, a.attr95 AS a_attr95, a.attr96 AS a_attr96, a.attr97 AS a_attr97, a.attr98 AS a_attr98, a.attr99 AS a_attr99, a.attr100 AS a_attr100,
+			       b.uid AS b_uid, b.attr1 AS b_attr1, b.attr2 AS b_attr2, b.attr3 AS b_attr3, b.attr4 AS b_attr4, b.attr5 AS b_attr5, b.attr6 AS b_attr6, b.attr7 AS b_attr7, b.attr8 AS b_attr8, b.attr9 AS b_attr9, b.attr10 AS b_attr10,
+			       b.attr11 AS b_attr11, b.attr12 AS b_attr12, b.attr13 AS b_attr13, b.attr14 AS b_attr14, b.attr15 AS b_attr15, b.attr16 AS b_attr16, b.attr17 AS b_attr17, b.attr18 AS b_attr18, b.attr19 AS b_attr19, b.attr20 AS b_attr20,
+			       b.attr21 AS b_attr21, b.attr22 AS b_attr22, b.attr23 AS b_attr23, b.attr24 AS b_attr24, b.attr25 AS b_attr25, b.attr26 AS b_attr26, b.attr27 AS b_attr27, b.attr28 AS b_attr28, b.attr29 AS b_attr29, b.attr30 AS b_attr30,
+			       b.attr31 AS b_attr31, b.attr32 AS b_attr32, b.attr33 AS b_attr33, b.attr34 AS b_attr34, b.attr35 AS b_attr35, b.attr36 AS b_attr36, b.attr37 AS b_attr37, b.attr38 AS b_attr38, b.attr39 AS b_attr39, b.attr40 AS b_attr40,
+			       b.attr41 AS b_attr41, b.attr42 AS b_attr42, b.attr43 AS b_attr43, b.attr44 AS b_attr44, b.attr45 AS b_attr45, b.attr46 AS b_attr46, b.attr47 AS b_attr47, b.attr48 AS b_attr48, b.attr49 AS b_attr49, b.attr50 AS b_attr50,
+			       b.attr51 AS b_attr51, b.attr52 AS b_attr52, b.attr53 AS b_attr53, b.attr54 AS b_attr54, b.attr55 AS b_attr55, b.attr56 AS b_attr56, b.attr57 AS b_attr57, b.attr58 AS b_attr58, b.attr59 AS b_attr59, b.attr60 AS b_attr60,
+			       b.attr61 AS b_attr61, b.attr62 AS b_attr62, b.attr63 AS b_attr63, b.attr64 AS b_attr64, b.attr65 AS b_attr65, b.attr66 AS b_attr66, b.attr67 AS b_attr67, b.attr68 AS b_attr68, b.attr69 AS b_attr69, b.attr70 AS b_attr70,
+			       b.attr71 AS b_attr71, b.attr72 AS b_attr72, b.attr73 AS b_attr73, b.attr74 AS b_attr74, b.attr75 AS b_attr75, b.attr76 AS b_attr76, b.attr77 AS b_attr77, b.attr78 AS b_attr78, b.attr79 AS b_attr79, b.attr80 AS b_attr80,
+			       b.attr81 AS b_attr81, b.attr82 AS b_attr82, b.attr83 AS b_attr83, b.attr84 AS b_attr84, b.attr85 AS b_attr85, b.attr86 AS b_attr86, b.attr87 AS b_attr87, b.attr88 AS b_attr88, b.attr89 AS b_attr89, b.attr90 AS b_attr90,
+			       b.attr91 AS b_attr91, b.attr92 AS b_attr92, b.attr93 AS b_attr93, b.attr94 AS b_attr94, b.attr95 AS b_attr95, b.attr96 AS b_attr96, b.attr97 AS b_attr97, b.attr98 AS b_attr98, b.attr99 AS b_attr99, b.attr100 AS b_attr100
 			LIMIT 300`
 
 			stmtTpl := spanner.Statement{
