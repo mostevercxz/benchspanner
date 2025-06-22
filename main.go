@@ -1092,6 +1092,121 @@ func spannerWriteBatchVertexTest(client *spanner.Client, batchNum int) {
 	log.Printf("  Latency metrics: %s", combinedMetrics.String())
 }
 
+// spannerUpdateVertexTest performs vertex update testing with multiple goroutines
+func spannerUpdateVertexTest(client *spanner.Client) {
+	log.Println("Starting Spanner vertex update test...")
+
+	totalVertices := int64(ZONES_TOTAL * RECORDS_PER_ZONE)
+	totalUpdates := totalVertices // Each worker will perform updates on existing vertices
+
+	// Calculate updates per worker
+	updatesPerWorker := int(math.Ceil(float64(totalUpdates) / float64(VUS)))
+
+	var wg sync.WaitGroup
+	startTime := time.Now()
+
+	// Initialize metrics
+	metricsCollector := metrics.NewConcurrentMetrics(VUS)
+
+	log.Printf("Starting %d update workers, total updates: %d...", VUS, totalUpdates)
+	countdownOrExit("开始更新顶点属性", 5)
+
+	for worker := 0; worker < VUS; worker++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+
+			log.Printf("Worker %d started", workerID)
+
+			workerSuccessCount := 0
+			workerErrorCount := 0
+
+			// Create random generator for this worker
+			rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(workerID)))
+
+			// Calculate which updates this worker should process
+			startUpdate := workerID * updatesPerWorker
+			endUpdate := (workerID + 1) * updatesPerWorker
+			if endUpdate > int(totalUpdates) {
+				endUpdate = int(totalUpdates)
+			}
+
+			for updateIndex := startUpdate; updateIndex < endUpdate; updateIndex++ {
+				// Calculate UID from update index (similar to vertex generation)
+				zoneOffset := updateIndex / RECORDS_PER_ZONE
+				idInZone := updateIndex%RECORDS_PER_ZONE + 1
+				zoneID := ZONE_START + zoneOffset
+				uid := (int64(zoneID) << 40) | int64(idInZone)
+
+				// Generate random attribute values for update
+				// We'll update attr88, attr89, attr90, attr91, attr92
+				attr88 := rng.Int63n(10000)
+				attr89 := rng.Int63n(10000)
+				attr90 := rng.Int63n(10000)
+				attr91 := rng.Int63n(10000)
+				attr92 := rng.Int63n(10000)
+
+				// Build mutation for this vertex update
+				mutation := buildVertexUpdateMutation(uid, attr88, attr89, attr90, attr91, attr92)
+
+				// Execute update
+				updateStart := time.Now()
+				_, err := client.Apply(context.Background(), []*spanner.Mutation{mutation})
+				updateDuration := time.Since(updateStart)
+
+				// Record metrics
+				metricsCollector.AddDuration(workerID, updateDuration)
+
+				if err != nil {
+					log.Printf("Worker %d update failed for UID %d: %s", workerID, uid, err.Error())
+					workerErrorCount++
+					metricsCollector.AddError(1)
+				} else {
+					workerSuccessCount++
+					metricsCollector.AddSuccess(1)
+				}
+
+				// Log progress every 100 updates
+				if (updateIndex-startUpdate+1)%100 == 0 {
+					log.Printf("Worker %d processed %d updates (success: %d, errors: %d)",
+						workerID, updateIndex-startUpdate+1, workerSuccessCount, workerErrorCount)
+				}
+			}
+
+			log.Printf("Worker %d completed: %d success, %d errors",
+				workerID, workerSuccessCount, workerErrorCount)
+		}(worker)
+	}
+
+	// Wait for all workers to complete
+	wg.Wait()
+	totalDuration := time.Since(startTime)
+
+	// Get combined metrics
+	combinedMetrics := metricsCollector.CombinedStats()
+	totalSuccess := metricsCollector.GetSuccessCount()
+	totalErrors := metricsCollector.GetErrorCount()
+
+	log.Println("Vertex update test completed:")
+	log.Printf("  Total duration: %v", totalDuration)
+	log.Printf("  Total updates: %d", totalUpdates)
+	log.Printf("  Successful updates: %d", totalSuccess)
+	log.Printf("  Failed updates: %d", totalErrors)
+	log.Printf("  Success rate: %.2f%%", float64(totalSuccess)*100/float64(totalUpdates))
+	log.Printf("  Throughput: %.2f updates/sec", float64(totalSuccess)/totalDuration.Seconds())
+	log.Printf("  Latency metrics: %s", combinedMetrics.String())
+}
+
+// buildVertexUpdateMutation builds a Spanner mutation for updating vertex attributes
+func buildVertexUpdateMutation(uid, attr88, attr89, attr90, attr91, attr92 int64) *spanner.Mutation {
+
+	// Update specific attributes - need to include key columns for the update
+	columns := []string{"uid", "attr88", "attr89", "attr90", "attr91", "attr92"}
+	values := []interface{}{uid, attr88, attr89, attr90, attr91, attr92}
+
+	return spanner.Update("Users", columns, values)
+}
+
 // initFromEnv initializes configuration from environment variables
 func initFromEnv() {
 	// Initialize VUS from environment variable
@@ -1390,6 +1505,10 @@ func main() {
 		log.Printf("Running edge write test for zones [%d, %d)...", startZone, endZone)
 		spannerWriteEdgeTest(client, startZone, endZone, batchNum)
 
+	case "update-vertex":
+		log.Println("Running vertex update test...")
+		spannerUpdateVertexTest(client)
+
 	case "truncate":
 		log.Println("Running truncate test...")
 		spannerTruncateAllData(ctx, dbPath)
@@ -1417,7 +1536,7 @@ func main() {
 
 	default:
 		log.Printf("Unknown test type: %s", testType)
-		log.Println("Available test types: setup, setupindex, write-vertex, write-edge, relation, all")
+		log.Println("Available test types: setup, setupindex, write-vertex, write-edge,update-vertex, relation, all")
 		os.Exit(1)
 	}
 
