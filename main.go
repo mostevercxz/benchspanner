@@ -793,8 +793,10 @@ func fetchExistingEdges(client *spanner.Client, limit int) ([]*EdgeData, error) 
 	edgesPerType := limit / len(relationTypes)
 
 	for _, relType := range relationTypes {
+		sqlStatement := fmt.Sprintf("SELECT shard, uid, dst_uid FROM %s LIMIT %d", relType, edgesPerType)
+		log.Printf("Querying %s with SQL: %s", relType, sqlStatement)
 		stmt := spanner.Statement{
-			SQL: fmt.Sprintf("SELECT shard, uid, dst_uid FROM %s LIMIT %d", relType, edgesPerType),
+			SQL: sqlStatement,
 		}
 
 		iter := client.Single().Query(ctx, stmt)
