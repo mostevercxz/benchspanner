@@ -28,7 +28,7 @@ import (
 
 const (
 	graphName        = "graph0618"
-	shardBucketCount = 1024 // 改这里即可增减 shard 桶数
+	shardBucketCount = 64 // 改这里即可增减 shard 桶数
 )
 
 // 基准测试配置
@@ -51,7 +51,7 @@ var (
 )
 
 // 与 DDL 中 %1024 一致；想改桶数仅改此处
-const ShardBucketCount int64 = 1024
+const ShardBucketCount int64 = 64
 
 // calcShard 复刻 Spanner 端的  MOD(ABS(FARM_FINGERPRINT(uid::STRING)), N)
 func calcShard(uid int64) int64 {
