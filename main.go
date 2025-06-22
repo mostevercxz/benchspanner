@@ -851,6 +851,8 @@ func spannerReadRelationTest(ctx context.Context, dbPath string) {
 			}
 			defer client.Close()
 
+			rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(vuIndex)))
+
 			ctx := context.Background()
 
 			const baseSQL = `
@@ -872,9 +874,9 @@ func spannerReadRelationTest(ctx context.Context, dbPath string) {
 			stmtTpl := spanner.Statement{
 				SQL: fmt.Sprintf(baseSQL, GRAPH_NAME), // stable text!
 				Params: map[string]interface{}{ // literals become params
-					"a101": int64(1000),
-					"a102": int64(2000),
-					"a103": int64(4000),
+					"a101": rng.Intn(10000),
+					"a102": rng.Intn(10000),
+					"a103": rng.Intn(10000),
 				},
 			}
 
