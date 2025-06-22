@@ -62,7 +62,6 @@ type EdgeData struct {
 	SourceUID int64
 	TargetUID int64
 	RelType   string
-	Shard     int64
 }
 
 // setupTableWithoutIndex creates all tables, TTL policies, and the property graph but excludes indexes.
@@ -843,7 +842,7 @@ func fetchExistingEdges(client *spanner.Client, limit int) ([]*EdgeData, error) 
 
 	for _, relType := range relationTypes {
 		stmt := spanner.Statement{
-			SQL: fmt.Sprintf("SELECT shard, uid, dst_uid FROM %s LIMIT %d", relType, edgesPerType),
+			SQL: fmt.Sprintf("SELECT uid, dst_uid FROM %s LIMIT %d", relType, edgesPerType),
 		}
 
 		iter := client.Single().Query(ctx, stmt)
@@ -858,8 +857,8 @@ func fetchExistingEdges(client *spanner.Client, limit int) ([]*EdgeData, error) 
 				return nil, fmt.Errorf("failed to query %s: %v", relType, err)
 			}
 
-			var shard, uid, dstUID int64
-			if err := row.Columns(&shard, &uid, &dstUID); err != nil {
+			var uid, dstUID int64
+			if err := row.Columns(&uid, &dstUID); err != nil {
 				return nil, fmt.Errorf("failed to parse row: %v", err)
 			}
 
@@ -867,7 +866,6 @@ func fetchExistingEdges(client *spanner.Client, limit int) ([]*EdgeData, error) 
 				SourceUID: uid,
 				TargetUID: dstUID,
 				RelType:   relType,
-				Shard:     shard,
 			})
 		}
 	}
