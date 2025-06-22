@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"cloud.google.com/go/spanner"
@@ -43,6 +44,8 @@ var (
 	INT_ATTR_CNT          = 90                             // 整数属性数量
 	PreGenerateVertexData = true                           // 是否预生成所有顶点数据
 	BATCH_NUM             = 1                              // 批量写入大小
+	EDGES_TO_FETCH        = 1000                           // 更新边测试中要获取的边数
+	UPDATES_PER_EDGE      = 10                             // 每条边要更新的次数
 	instanceID            = "graph-demo"
 	GRAPH_NAME            = "graph0618"
 	credentialsFile       = "superb-receiver-463215-f7-3b974ed0b146.json" // GCP credentials file path
@@ -65,6 +68,14 @@ type VertexData struct {
 	UID      int64
 	StrAttrs []string
 	IntAttrs []int64
+}
+
+// EdgeData represents an existing edge for update testing
+type EdgeData struct {
+	SourceUID int64
+	TargetUID int64
+	RelType   string
+	Shard     int64
 }
 
 // setupTableWithoutIndex creates all tables, TTL policies, and the property graph but excludes indexes.
@@ -770,6 +781,217 @@ func buildEdgeMutation(relType string, sourceUID, targetUID int64, attrs []int64
 	return spanner.Insert(relType, columns, values)
 }
 
+// fetchExistingEdges fetches existing edges from Spanner for update testing
+func fetchExistingEdges(client *spanner.Client, limit int) ([]*EdgeData, error) {
+	log.Printf("Fetching %d existing edges from Spanner...", limit)
+
+	ctx := context.Background()
+	var edges []*EdgeData
+
+	// Query edges from different relation types
+	relationTypes := []string{"Rel1", "Rel2", "Rel3", "Rel4", "Rel5"}
+	edgesPerType := limit / len(relationTypes)
+
+	for _, relType := range relationTypes {
+		stmt := spanner.Statement{
+			SQL: fmt.Sprintf("SELECT shard, uid, dst_uid FROM %s LIMIT %d", relType, edgesPerType),
+		}
+
+		iter := client.Single().Query(ctx, stmt)
+		defer iter.Stop()
+
+		for {
+			row, err := iter.Next()
+			if err == iterator.Done {
+				break
+			}
+			if err != nil {
+				return nil, fmt.Errorf("failed to query %s: %v", relType, err)
+			}
+
+			var shard, uid, dstUID int64
+			if err := row.Columns(&shard, &uid, &dstUID); err != nil {
+				return nil, fmt.Errorf("failed to parse row: %v", err)
+			}
+
+			edges = append(edges, &EdgeData{
+				SourceUID: uid,
+				TargetUID: dstUID,
+				RelType:   relType,
+				Shard:     shard,
+			})
+		}
+	}
+
+	log.Printf("Successfully fetched %d existing edges", len(edges))
+	return edges, nil
+}
+
+// buildEdgeUpdateMutation builds a Spanner mutation for updating edge attributes
+func buildEdgeUpdateMutation(relType string, sourceUID, targetUID int64, attr101, attr102, attr103 int64) *spanner.Mutation {
+	// Calculate shard for this edge
+	shard := calcShard(sourceUID)
+
+	// Update specific attributes - need to include key columns for the update
+	columns := []string{"shard", "uid", "dst_uid", "attr101", "attr102", "attr103"}
+	values := []interface{}{shard, sourceUID, targetUID, attr101, attr102, attr103}
+
+	return spanner.Update(relType, columns, values)
+}
+
+// spannerUpdateEdgeTest performs edge update testing with multiple goroutines
+func spannerUpdateEdgeTest(client *spanner.Client) {
+	log.Printf("Starting Spanner edge update test...")
+	log.Printf("Configuration: Fetch %d existing edges, update each edge %d times", EDGES_TO_FETCH, UPDATES_PER_EDGE)
+
+	// Step 1: Fetch existing edges from the database
+	log.Printf("Step 1: Fetching existing edges...")
+	existingEdges, err := fetchExistingEdges(client, EDGES_TO_FETCH)
+	if err != nil {
+		log.Printf("Failed to fetch existing edges: %v", err)
+		return
+	}
+
+	if len(existingEdges) == 0 {
+		log.Printf("No existing edges found in the database. Please run edge write test first.")
+		return
+	}
+
+	log.Printf("Successfully fetched %d existing edges", len(existingEdges))
+
+	// Step 2: Calculate total updates and distribution
+	totalUpdates := int64(len(existingEdges) * UPDATES_PER_EDGE)
+	edgesPerWorker := int(math.Ceil(float64(len(existingEdges)) / float64(VUS)))
+
+	log.Printf("Total updates to perform: %d (each of %d edges updated %d times)", totalUpdates, len(existingEdges), UPDATES_PER_EDGE)
+	log.Printf("Edges per worker: %d", edgesPerWorker)
+
+	var wg sync.WaitGroup
+	startTime := time.Now()
+
+	// Initialize metrics
+	metricsCollector := metrics.NewConcurrentMetrics(VUS)
+
+	// Setup signal handling for graceful shutdown
+	interrupt := make(chan os.Signal, 1)
+	signal.Notify(interrupt, os.Interrupt)
+	var stopFlag int32
+
+	log.Printf("Starting %d edge update workers...", VUS)
+
+	// 倒计时处理
+	countdownOrExit("开始更新边", 5)
+
+	// Start signal handler goroutine
+	go func() {
+		<-interrupt
+		log.Printf("Received termination signal, stopping update edge test gracefully...")
+		atomic.StoreInt32(&stopFlag, 1)
+	}()
+
+	for worker := 0; worker < VUS; worker++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+
+			log.Printf("Worker %d started", workerID)
+
+			workerSuccessCount := 0
+			workerErrorCount := 0
+
+			// Create random generator for this worker
+			rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(workerID)))
+
+			// Calculate which edges this worker should process
+			workerStartEdge := workerID * edgesPerWorker
+			workerEndEdge := (workerID + 1) * edgesPerWorker
+			if workerEndEdge > len(existingEdges) {
+				workerEndEdge = len(existingEdges)
+			}
+
+			// Process edges assigned to this worker
+			for edgeIndex := workerStartEdge; edgeIndex < workerEndEdge; edgeIndex++ {
+				// Check stop flag for outer loop
+				if atomic.LoadInt32(&stopFlag) == 1 {
+					log.Printf("Worker %d received stop signal, terminating at edgeIndex %d", workerID, edgeIndex)
+					break
+				}
+
+				edge := existingEdges[edgeIndex]
+
+				// Update this edge UPDATES_PER_EDGE times
+				for updateRound := 0; updateRound < UPDATES_PER_EDGE; updateRound++ {
+					// Check stop flag for inner loop
+					if atomic.LoadInt32(&stopFlag) == 1 {
+						log.Printf("Worker %d received stop signal, terminating at edgeIndex %d, updateRound %d", workerID, edgeIndex, updateRound)
+						break
+					}
+
+					// Generate random attribute values for update (attr101, attr102, attr103)
+					attr101 := rng.Int63n(10000)
+					attr102 := rng.Int63n(10000)
+					attr103 := rng.Int63n(10000)
+
+					// Build and execute UPDATE mutation
+					updateStart := time.Now()
+					mutation := buildEdgeUpdateMutation(edge.RelType, edge.SourceUID, edge.TargetUID, attr101, attr102, attr103)
+
+					// Debug: log the first few mutations
+					if workerID == 0 && edgeIndex == workerStartEdge && updateRound == 0 {
+						log.Printf("Sample edge update: %s edge %d->%d, attrs: %d,%d,%d",
+							edge.RelType, edge.SourceUID, edge.TargetUID, attr101, attr102, attr103)
+					}
+
+					_, err := client.Apply(context.Background(), []*spanner.Mutation{mutation})
+					updateDuration := time.Since(updateStart)
+
+					// Record metrics
+					metricsCollector.AddDuration(workerID, updateDuration)
+
+					if err != nil {
+						log.Printf("Worker %d update failed for edge %d->%d [%s]: %s",
+							workerID, edge.SourceUID, edge.TargetUID, edge.RelType, err.Error())
+						workerErrorCount++
+						metricsCollector.AddError(1)
+					} else {
+						workerSuccessCount++
+						metricsCollector.AddSuccess(1)
+					}
+				}
+
+				// Log progress every 100 edges
+				if (edgeIndex-workerStartEdge+1)%100 == 0 {
+					log.Printf("Worker %d processed %d edges (success: %d, errors: %d)",
+						workerID, edgeIndex-workerStartEdge+1, workerSuccessCount, workerErrorCount)
+				}
+			}
+
+			log.Printf("Worker %d completed: processed %d edges with %d updates each (success: %d, errors: %d)",
+				workerID, workerEndEdge-workerStartEdge, UPDATES_PER_EDGE, workerSuccessCount, workerErrorCount)
+		}(worker)
+	}
+
+	// Wait for all workers to complete
+	wg.Wait()
+	totalDuration := time.Since(startTime)
+
+	// Get combined metrics
+	combinedMetrics := metricsCollector.CombinedStats()
+	totalSuccess := metricsCollector.GetSuccessCount()
+	totalErrors := metricsCollector.GetErrorCount()
+
+	log.Println("Edge update test completed:")
+	log.Printf("  Total duration: %v", totalDuration)
+	log.Printf("  Edges fetched: %d", len(existingEdges))
+	log.Printf("  Updates per edge: %d", UPDATES_PER_EDGE)
+	log.Printf("  Total updates attempted: %d", totalUpdates)
+	log.Printf("  Successful updates: %d", totalSuccess)
+	log.Printf("  Failed updates: %d", totalErrors)
+	log.Printf("  Success rate: %.2f%%", float64(totalSuccess)*100/float64(totalUpdates))
+	log.Printf("  Throughput: %.2f updates/sec", float64(totalSuccess)/totalDuration.Seconds())
+	log.Printf("  Latency metrics: %s", combinedMetrics.String())
+}
+
 // spannerReadRelationTest performs edge relation read testing with multiple goroutines – similar logic to polardbReadRelationTest.
 // It scans every vertex within the configured zone range, reads up to 300 destination UIDs connected via
 // Rel1 / Rel4 / Rel5 edges that satisfy attr101>1000, attr102>2000, attr103>4000 and records latency metrics.
@@ -1228,6 +1450,20 @@ func initFromEnv() {
 		}
 	}
 
+	// Initialize EDGES_TO_FETCH from environment variable
+	if edgesToFetchStr := os.Getenv("EDGES_TO_FETCH"); edgesToFetchStr != "" {
+		if parsedEdgesToFetch, err := strconv.Atoi(edgesToFetchStr); err == nil && parsedEdgesToFetch > 0 {
+			EDGES_TO_FETCH = parsedEdgesToFetch
+		}
+	}
+
+	// Initialize UPDATES_PER_EDGE from environment variable
+	if updatesPerEdgeStr := os.Getenv("UPDATES_PER_EDGE"); updatesPerEdgeStr != "" {
+		if parsedUpdatesPerEdge, err := strconv.Atoi(updatesPerEdgeStr); err == nil && parsedUpdatesPerEdge > 0 {
+			UPDATES_PER_EDGE = parsedUpdatesPerEdge
+		}
+	}
+
 	// Initialize credentialsFile from environment variable
 	if credFile := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS_FILE"); credFile != "" {
 		credentialsFile = credFile
@@ -1243,8 +1479,8 @@ func initFromEnv() {
 		databaseID = dbID
 	}
 
-	log.Printf("Configuration: VUS=%d, ZONE_START=%d, ZONES_TOTAL=%d, RECORDS_PER_ZONE=%d, EDGES_PER_RELATION=%d, TOTAL_VERTICES=%d, PreGenerateVertexData=%v, BATCH_NUM=%d, credentialsFile=%s",
-		VUS, ZONE_START, ZONES_TOTAL, RECORDS_PER_ZONE, EDGES_PER_RELATION, TOTAL_VERTICES, PreGenerateVertexData, BATCH_NUM, credentialsFile)
+	log.Printf("Configuration: VUS=%d, ZONE_START=%d, ZONES_TOTAL=%d, RECORDS_PER_ZONE=%d, EDGES_PER_RELATION=%d, TOTAL_VERTICES=%d, PreGenerateVertexData=%v, BATCH_NUM=%d, EDGES_TO_FETCH=%d, UPDATES_PER_EDGE=%d, credentialsFile=%s",
+		VUS, ZONE_START, ZONES_TOTAL, RECORDS_PER_ZONE, EDGES_PER_RELATION, TOTAL_VERTICES, PreGenerateVertexData, BATCH_NUM, EDGES_TO_FETCH, UPDATES_PER_EDGE, credentialsFile)
 }
 
 // setupLogging configures logging to output to both terminal and file
@@ -1354,7 +1590,7 @@ func main() {
 	var testType string
 	var startZone, endZone int
 	var batchNum int
-	flag.StringVar(&testType, "test", "setup", "Test type to run: setup, setupindex, write-vertex, write-edge, relation, all")
+	flag.StringVar(&testType, "test", "setup", "Test type to run: setup, setupindex, write-vertex, write-edge, update-vertex, update-edge, relation, all")
 	flag.IntVar(&startZone, "start-zone", ZONE_START, "Start zone ID for edge test")
 	flag.IntVar(&endZone, "end-zone", ZONE_START+ZONES_TOTAL, "End zone ID for edge test")
 	flag.IntVar(&batchNum, "batch-num", EDGES_PER_RELATION, "Number of edges per batch for edge write test")
@@ -1460,6 +1696,10 @@ func main() {
 		log.Println("Running vertex update test...")
 		spannerUpdateVertexTest(client)
 
+	case "update-edge":
+		log.Println("Running edge update test...")
+		spannerUpdateEdgeTest(client)
+
 	case "truncate":
 		log.Println("Running truncate test...")
 		spannerTruncateAllData(ctx, dbPath)
@@ -1490,7 +1730,7 @@ func main() {
 
 	default:
 		log.Printf("Unknown test type: %s", testType)
-		log.Println("Available test types: setup, setupindex, write-vertex, write-edge, update-vertex, relation, all")
+		log.Println("Available test types: setup, setupindex, write-vertex, write-edge, update-vertex, update-edge, relation, all")
 		os.Exit(1)
 	}
 
