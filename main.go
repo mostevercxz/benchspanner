@@ -878,12 +878,9 @@ func fetchExistingEdges(client *spanner.Client, limit int) ([]*EdgeData, error) 
 
 // buildEdgeUpdateMutation builds a Spanner mutation for updating edge attributes
 func buildEdgeUpdateMutation(relType string, sourceUID, targetUID int64, attr101, attr102, attr103 int64) *spanner.Mutation {
-	// Calculate shard for this edge
-	shard := calcShard(sourceUID)
-
 	// Update specific attributes - need to include key columns for the update
-	columns := []string{"shard", "uid", "dst_uid", "attr101", "attr102", "attr103"}
-	values := []interface{}{shard, sourceUID, targetUID, attr101, attr102, attr103}
+	columns := []string{"uid", "dst_uid", "attr101", "attr102", "attr103"}
+	values := []interface{}{sourceUID, targetUID, attr101, attr102, attr103}
 
 	return spanner.Update(relType, columns, values)
 }
