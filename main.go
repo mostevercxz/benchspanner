@@ -1054,8 +1054,6 @@ func spannerReadRelationTest(ctx context.Context, dbPath string) {
 			       b.attr91 AS b_attr91, b.attr92 AS b_attr92, b.attr93 AS b_attr93, b.attr94 AS b_attr94, b.attr95 AS b_attr95, b.attr96 AS b_attr96, b.attr97 AS b_attr97, b.attr98 AS b_attr98, b.attr99 AS b_attr99, b.attr100 AS b_attr100
 			LIMIT 300`
 
-			log.Printf("realSQL: %s", fmt.Sprintf(baseSQL, GRAPH_NAME))
-
 			for iter := 0; iter < iterPerVU; iter++ {
 				idx := vuIndex*iterPerVU + iter
 				if idx >= totalVertices {
@@ -1711,6 +1709,10 @@ func main() {
 		log.Println("Running relation read test...")
 		spannerReadRelationTest(ctx, dbPath)
 
+	case "read-invert":
+		log.Println("Running invert read test...")
+		spannerReadInvertTest(client)
+
 	case "all":
 		log.Println("Running all tests...")
 
@@ -1733,7 +1735,7 @@ func main() {
 
 	default:
 		log.Printf("Unknown test type: %s", testType)
-		log.Println("Available test types: setup, setupindex, write-vertex, write-edge, update-vertex, update-edge, relation, all")
+		log.Println("Available test types: setup, setupindex, write-vertex, write-edge, update-vertex, update-edge, relation, read-invert, all")
 		os.Exit(1)
 	}
 
@@ -1747,4 +1749,139 @@ func buildUserProps() string {
 		props = append(props, fmt.Sprintf("attr%d", i))
 	}
 	return strings.Join(props, ", ")
+}
+
+// spannerReadInvertTest performs invert read testing with multiple goroutines
+func spannerReadInvertTest(client *spanner.Client) {
+	log.Println("Starting Spanner invert read test...")
+
+	// Total queries to execute
+	totalQueries := 5000000
+	iterPerVU := int(math.Ceil(float64(totalQueries) / float64(VUS)))
+
+	var wg sync.WaitGroup
+	startTime := time.Now()
+
+	// Initialize metrics
+	metricsCollector := metrics.NewConcurrentMetrics(VUS)
+
+	// Setup signal handling for graceful shutdown
+	interrupt := make(chan os.Signal, 1)
+	signal.Notify(interrupt, os.Interrupt)
+	var stopFlag int32
+
+	log.Printf("Starting %d invert read workers...", VUS)
+
+	// 倒计时处理
+	countdownOrExit("开始倒排读取", 5)
+
+	// Start signal handler goroutine
+	go func() {
+		<-interrupt
+		log.Printf("Received termination signal, stopping read-invert test gracefully...")
+		atomic.StoreInt32(&stopFlag, 1)
+	}()
+
+	for vu := 0; vu < VUS; vu++ {
+		wg.Add(1)
+		go func(vuIndex int) {
+			defer wg.Done()
+			log.Printf("VU %d started, need to process %d queries", vuIndex, iterPerVU)
+
+			// Create random generator for this worker
+			rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(vuIndex)))
+
+			ctx := context.Background()
+
+			// Execute iterations assigned to this VU
+			for iter := 0; iter < iterPerVU; iter++ {
+				// Check stop flag
+				if atomic.LoadInt32(&stopFlag) == 1 {
+					log.Printf("VU %d received stop signal, terminating at iter %d", vuIndex, iter)
+					break
+				}
+
+				totalProcessed := vuIndex*iterPerVU + iter
+				if totalProcessed >= totalQueries {
+					break
+				}
+
+				// Generate random values for WHERE clause [0,9999)
+				attr11Value := rng.Intn(9999)
+				attr12Value := rng.Intn(9999)
+				attr13Value := rng.Intn(9999)
+
+				// Build parameterized query
+				stmt := spanner.Statement{
+					SQL: `SELECT * FROM Users 
+						  WHERE attr11 = @attr11 AND attr12 > @attr12 AND attr13 > @attr13 
+						  LIMIT 300`,
+					Params: map[string]interface{}{
+						"attr11": int64(attr11Value),
+						"attr12": int64(attr12Value),
+						"attr13": int64(attr13Value),
+					},
+				}
+
+				queryStart := time.Now()
+				// Create a new single-use read-only transaction for each query
+				ro := client.Single()
+				iterRows := ro.Query(ctx, stmt)
+
+				// Count rows and consume results
+				rowCount := 0
+				success := true
+				for {
+					_, err := iterRows.Next()
+					if err == iterator.Done {
+						break
+					}
+					if err != nil {
+						log.Printf("VU %d query failed: %v", vuIndex, err)
+						success = false
+						break
+					}
+					rowCount++
+				}
+				iterRows.Stop()
+				ro.Close() // Close the transaction after each query
+
+				queryDuration := time.Since(queryStart)
+
+				// Record metrics
+				metricsCollector.AddDuration(vuIndex, queryDuration)
+
+				if success {
+					metricsCollector.AddSuccess(1)
+				} else {
+					metricsCollector.AddError(1)
+				}
+
+				// Log progress every 100 queries
+				if iter%100 == 0 {
+					log.Printf("VU %d, iter %d, attr11=%d, attr12>%d, attr13>%d, query time: %v, rows: %d",
+						vuIndex, iter, attr11Value, attr12Value, attr13Value, queryDuration, rowCount)
+				}
+			}
+
+			log.Printf("VU %d completed", vuIndex)
+		}(vu)
+	}
+
+	wg.Wait()
+	totalDuration := time.Since(startTime)
+
+	// Get combined metrics
+	combinedMetrics := metricsCollector.CombinedStats()
+	totalSuccess := metricsCollector.GetSuccessCount()
+	totalErrors := metricsCollector.GetErrorCount()
+
+	log.Println("Invert read test completed:")
+	log.Printf("  Total duration: %v", totalDuration)
+	log.Printf("  Total queries: %d", totalSuccess+totalErrors)
+	log.Printf("  Successful queries: %d", totalSuccess)
+	log.Printf("  Failed queries: %d", totalErrors)
+	log.Printf("  Success rate: %.2f%%", float64(totalSuccess)*100/float64(totalSuccess+totalErrors))
+	log.Printf("  Throughput: %.2f queries/sec", float64(totalSuccess)/totalDuration.Seconds())
+	log.Printf("  Latency metrics: %s", combinedMetrics.String())
 }
