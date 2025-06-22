@@ -1030,7 +1030,7 @@ func spannerReadRelationTest(ctx context.Context, dbPath string) {
 
 			const baseSQL = `
 			GRAPH %s
-			MATCH (a:User {uid:@uid})-[e:Rel1|Rel4|Rel5]->(b:User)
+			MATCH (a:User {shard:@shard,uid:@uid})-[e:Rel1|Rel4|Rel5]->(b:User)
 			WHERE e.attr101 > @a101 AND e.attr102 > @a102 AND e.attr103 > @a103
 			RETURN a.uid AS a_uid, a.attr1 AS a_attr1, a.attr2 AS a_attr2, a.attr3 AS a_attr3, a.attr4 AS a_attr4, a.attr5 AS a_attr5, a.attr6 AS a_attr6, a.attr7 AS a_attr7, a.attr8 AS a_attr8, a.attr9 AS a_attr9, a.attr10 AS a_attr10,
 			       a.attr11 AS a_attr11, a.attr12 AS a_attr12, a.attr13 AS a_attr13, a.attr14 AS a_attr14, a.attr15 AS a_attr15, a.attr16 AS a_attr16, a.attr17 AS a_attr17, a.attr18 AS a_attr18, a.attr19 AS a_attr19, a.attr20 AS a_attr20,
@@ -1054,14 +1054,7 @@ func spannerReadRelationTest(ctx context.Context, dbPath string) {
 			       b.attr91 AS b_attr91, b.attr92 AS b_attr92, b.attr93 AS b_attr93, b.attr94 AS b_attr94, b.attr95 AS b_attr95, b.attr96 AS b_attr96, b.attr97 AS b_attr97, b.attr98 AS b_attr98, b.attr99 AS b_attr99, b.attr100 AS b_attr100
 			LIMIT 300`
 
-			stmtTpl := spanner.Statement{
-				SQL: fmt.Sprintf(baseSQL, GRAPH_NAME), // stable text!
-				Params: map[string]interface{}{ // literals become params
-					"a101": rng.Intn(10000),
-					"a102": rng.Intn(10000),
-					"a103": rng.Intn(10000),
-				},
-			}
+			log.Printf("realSQL: %s", fmt.Sprintf(baseSQL, GRAPH_NAME))
 
 			for iter := 0; iter < iterPerVU; iter++ {
 				idx := vuIndex*iterPerVU + iter
@@ -1075,13 +1068,21 @@ func spannerReadRelationTest(ctx context.Context, dbPath string) {
 				zoneID := ZONE_START + zoneOffset
 				uid := (int64(zoneID) << 40) | int64(idInZone)
 
-				stmt := stmtTpl          // shallow copy
-				stmt.Params["uid"] = uid // just mutate the param
+				stmtTpl := spanner.Statement{
+					SQL: fmt.Sprintf(baseSQL, GRAPH_NAME), // stable text!
+					Params: map[string]interface{}{ // literals become params
+						"shard": calcShard(uid),
+						"uid":   uid,
+						"a101":  rng.Intn(10000),
+						"a102":  rng.Intn(10000),
+						"a103":  rng.Intn(10000),
+					},
+				}
 
 				queryStart := time.Now()
 				// Create a new single-use read-only transaction for each query
 				ro := client.Single()
-				iterRows := ro.Query(ctx, stmt)
+				iterRows := ro.Query(ctx, stmtTpl)
 
 				// Consume rows and capture errors
 				rowCnt := 0
